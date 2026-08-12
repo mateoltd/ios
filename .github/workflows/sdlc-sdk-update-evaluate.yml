@@ -1,0 +1,165 @@
+name: SDLC / SDK Update Evaluation
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  evaluate:
+    name: Evaluate SDK Update
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.pull_request.head.ref == 'sdlc/sdk-update' }}
+    permissions:
+      id-token: write # Azure OIDC login
+      actions: read # claude-code-action track_progress
+      contents: write # push a resolved fix
+      pull-requests: write # sticky comment
+
+    steps:
+      - name: Skip if this bump was already evaluated
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          LATEST_SUBJECT=$(gh pr view "$PR_NUMBER" -R "$REPO" --json commits --jq '.commits[-1].messageHeadline')
+          if [[ "$LATEST_SUBJECT" != "SDK Update - "* ]]; then
+            echo "Branch tip is not a fresh SDK version bump ('$LATEST_SUBJECT') — already evaluated, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to Azure
+        if: steps.gate.outputs.skip == 'false'
+        uses: bitwarden/gh-actions/azure-login@main
+        with:
+          subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          client_id: ${{ secrets.AZURE_CLIENT_ID }}
+
+      - name: Get Azure Key Vault secrets
+        id: get-kv-secrets
+        if: steps.gate.outputs.skip == 'false'
+        uses: bitwarden/gh-actions/get-keyvault-secrets@main
+        with:
+          keyvault: gh-org-bitwarden
+          secrets: "ANTHROPIC-RESPONSE-API-KEY,BW-GHAPP-ID,BW-GHAPP-KEY"
+
+      - name: Log out from Azure
+        if: steps.gate.outputs.skip == 'false'
+        uses: bitwarden/gh-actions/azure-logout@main
+
+      - name: Generate GH App token
+        if: steps.gate.outputs.skip == 'false'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ steps.get-kv-secrets.outputs.BW-GHAPP-ID }}
+          private-key: ${{ steps.get-kv-secrets.outputs.BW-GHAPP-KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Check out repo
+        if: steps.gate.outputs.skip == 'false'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      # A full clone, deliberately: the pinned revisions live on `unstable` and on `v<version>`
+      # tags, not on `main`, so --depth or --branch would resolve the wrong tree. The whole
+      # repository is under 10 MB.
+      - name: Clone sdk-swift
+        if: steps.gate.outputs.skip == 'false'
+        run: git clone --quiet https://github.com/bitwarden/sdk-swift "${{ github.workspace }}/../sdk-swift"
+
+      # Blobless: only needed to inspect uniffi.toml and Rust-level behavior for specific commits.
+      - name: Clone sdk-internal
+        if: steps.gate.outputs.skip == 'false'
+        run: git clone --quiet --filter=blob:none https://github.com/bitwarden/sdk-internal "${{ github.workspace }}/../sdk-internal"
+
+      - name: Run Claude Code
+        id: claude
+        if: steps.gate.outputs.skip == 'false'
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
+        with:
+          # Required, not optional. Agent mode calls configureGitAuth unconditionally, which unsets
+          # the header actions/checkout persisted and rewrites origin. Without this the final push
+          # would authenticate as the token the action mints for itself over OIDC rather than the
+          # bw-ghapp token provisioned above, so permission-contents: write on the app-token step
+          # would cover only the clone.
+          github_token: ${{ steps.app-token.outputs.token }}
+          anthropic_api_key: ${{ steps.get-kv-secrets.outputs.ANTHROPIC-RESPONSE-API-KEY }}
+          allowed_bots: "bw-ghapp"
+          bot_id: "178206702"
+          bot_name: "bw-ghapp[bot]"
+          track_progress: true
+          use_sticky_comment: true
+          plugin_marketplaces: "https://github.com/bitwarden/ai-plugins.git"
+          plugins: |
+            bitwarden-delivery-tools@bitwarden-marketplace
+          prompt: |
+            PR #${{ github.event.pull_request.number }} in ${{ github.repository }} bumps the Bitwarden SDK. Evaluate it using the `evaluating-sdk-swift-updates` skill and resolve anything within scope that needs resolving, per the skill's own Step 8.
+
+            Both prerequisite clones are already provided as sibling directories, satisfying Step 2 — use them directly, do not re-clone. `bitwarden/sdk-swift` is at `${{ github.workspace }}/../sdk-swift` and is the primary source of truth for the binding surface. `bitwarden/sdk-internal` is at `${{ github.workspace }}/../sdk-internal` and is a blobless clone, for Step 4 and Rust-level behavioral questions only.
+
+            This runner has no macOS toolchain, so there is no compile check — that is expected and the skill says so. Do not attempt to run xcodegen, xcodebuild, Scripts/bootstrap.sh, or Scripts/generate-mocks.sh. `.github/workflows/test.yml` builds and tests this PR separately and is the arbiter for any fix you commit.
+
+            Commit any fix on the current branch (already checked out) using `Skill(bitwarden-delivery-tools:committing-changes)` for the message — do not push; the workflow pushes separately.
+
+            When done, update the sticky PR comment with the Step 7 report, structured as: "## SDK bump evaluated" (old → new revision and version, commit count), "## Compile-time breaks" (found-and-fixed, or "none found"), "## Runtime & serialization considerations" (found-and-fixed, or behavioral notes worth flagging; omit the section if there are none), "## Everything else in range — confirmed safe" (brief, one line per commit or group), and "## Commit" (the SHA, or "no commit — nothing needed fixing"). Always post this, even when the conclusion is that nothing needs fixing — the comment is the audit trail that the check ran.
+          # A pattern is a prefix rule when it ends in ":*", otherwise a wildcard rule if it contains
+          # an unescaped "*". So never put an inline "*" in a pattern that also ends ":*": a form
+          # like Bash(git -C *:*) is not rejected, it is silently read as the literal prefix
+          # "git -C *", which no real command starts with. That misclassification denied every
+          # git -C and gradlew call in the Android equivalent — 13 denials with no diagnostic.
+          # Wildcard patterns here therefore never end in ":*", and are anchored rather than
+          # substring-matching, since "*" compiles to ".*" under a dotall regex and this job feeds
+          # Claude untrusted text (sdk-internal commit subjects, the PR body).
+          # configureGitAuth writes an installation token into .git/config in plaintext, so Read and
+          # grep are kept out of .git. No legitimate SDK fix edits CI or agent configuration, and an
+          # edit under .github/workflows/ would execute with secrets on the next synchronize, since
+          # pull_request runs the workflow definition from the head branch. The push step enforces
+          # the same boundary outside the model.
+          claude_args: |
+            --model opus
+            --allowedTools "Bash(bash .claude/skills/evaluating-sdk-swift-updates/sdk-surface-diff.sh *),Bash(.claude/skills/evaluating-sdk-swift-updates/sdk-surface-diff.sh *),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git -C * log *),Bash(git -C * show *),Bash(git -C * diff *),Bash(git -C * grep *),Bash(git add:*),Bash(git commit:*),Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git status:*),Bash(grep:*),Read,Grep,Glob,Edit,Write,Skill,mcp__github_comment__update_claude_comment"
+            --disallowedTools "Read(**/.git/**),Edit(**/.git/**),Write(**/.git/**),Edit(.github/**),Write(.github/**),Edit(.claude/**),Write(.claude/**)"
+
+      - name: Push any resolved fix
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          _BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Claude left uncommitted changes; nothing was pushed."
+            git status --porcelain
+            exit 1
+          fi
+
+          if git diff --quiet "origin/$_BRANCH_NAME" HEAD; then
+            echo "No new commits to push."
+            exit 0
+          fi
+
+          # Enforce the tool-permission boundary outside the model. A fix may touch SDK call sites
+          # and the version pin; it must never touch CI or agent configuration, which would execute
+          # with secrets on the next synchronize.
+          CHANGED=$(git diff --name-only "origin/$_BRANCH_NAME" HEAD)
+          if echo "$CHANGED" | grep -qE '^(\.github/|\.claude/)'; then
+            echo "::error::Refusing to push: the fix touches CI or agent configuration."
+            echo "$CHANGED"
+            exit 1
+          fi
+
+          git push origin "HEAD:$_BRANCH_NAME"
