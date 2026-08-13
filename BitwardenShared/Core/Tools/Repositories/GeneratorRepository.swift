@@ -54,6 +54,24 @@ protocol GeneratorRepository: AnyObject {
     ///
     func generateUsername(settings: UsernameGeneratorRequest) async throws -> String
 
+    /// Loads a SimpleLogin profile and cached alias only from the encrypted local vault.
+    func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile?
+
+    /// Creates a SimpleLogin alias in response to an explicit user action.
+    func createEmailAlias(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult
+
+    /// Explicitly changes an alias's forwarding state.
+    func setEmailAliasEnabled(_ alias: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult
+
+    /// Explicitly deletes an alias.
+    func deleteEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult
+
+    /// Explicitly reconciles provider and encrypted vault state.
+    func reconcileEmailAliases(baseUrl: String) async throws -> EmailAliasResult?
+
+    /// Cancels provider operations and clears decrypted alias state.
+    func cancelEmailAliasOperations() async
+
     /// Gets the user's saved password generation options with policy and password rules applied.
     ///
     /// - Parameter rules: An optional password rules string (from the AutoFill credential API) to
@@ -124,6 +142,9 @@ class DefaultGeneratorRepository {
     /// The service used by the application to report non-fatal errors.
     let errorReporter: ErrorReporter
 
+    /// The service that owns encrypted alias connection state and explicit provider operations.
+    let emailAliasService: EmailAliasService
+
     /// The service used for evaluating policy.
     let policyService: PolicyService
 
@@ -144,12 +165,14 @@ class DefaultGeneratorRepository {
     init(
         clientService: ClientService,
         dataStore: GeneratorDataStore,
+        emailAliasService: EmailAliasService,
         errorReporter: ErrorReporter,
         policyService: PolicyService,
         stateService: StateService,
     ) {
         self.clientService = clientService
         self.dataStore = dataStore
+        self.emailAliasService = emailAliasService
         self.errorReporter = errorReporter
         self.policyService = policyService
         self.stateService = stateService
@@ -236,6 +259,30 @@ extension DefaultGeneratorRepository: GeneratorRepository {
         try await clientService.generators().username(settings: settings)
     }
 
+    func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile? {
+        try await emailAliasService.loadProfile(baseUrl: baseUrl)
+    }
+
+    func createEmailAlias(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult {
+        try await emailAliasService.createAlias(token: token, baseUrl: baseUrl, hostname: hostname)
+    }
+
+    func setEmailAliasEnabled(_ alias: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult {
+        try await emailAliasService.setAliasEnabled(alias, enabled: enabled)
+    }
+
+    func deleteEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try await emailAliasService.deleteAlias(alias)
+    }
+
+    func reconcileEmailAliases(baseUrl: String) async throws -> EmailAliasResult? {
+        try await emailAliasService.reconcile(baseUrl: baseUrl)
+    }
+
+    func cancelEmailAliasOperations() async {
+        await emailAliasService.cancelAndClear()
+    }
+
     func getEffectivePasswordGenerationOptions(
         rules: String?,
     ) async throws -> (options: PasswordGenerationOptions, isPolicyInEffect: Bool) {
@@ -266,6 +313,11 @@ extension DefaultGeneratorRepository: GeneratorRepository {
         if options.plusAddressedEmail.isEmptyOrNil {
             options.plusAddressedEmail = try? await stateService.getActiveAccount().profile.email
         }
+        if options.serviceType == .simpleLogin,
+           let profile = try await emailAliasService.loadProfile(baseUrl: options.simpleLoginBaseUrl ?? "") {
+            options.simpleLoginApiKey = profile.token
+            options.simpleLoginBaseUrl = profile.baseUrl
+        }
         return options
     }
 
@@ -284,6 +336,8 @@ extension DefaultGeneratorRepository: GeneratorRepository {
     }
 
     func setUsernameGenerationOptions(_ options: UsernameGenerationOptions) async throws {
-        try await stateService.setUsernameGenerationOptions(options)
+        var nonSecretOptions = options
+        nonSecretOptions.simpleLoginApiKey = nil
+        try await stateService.setUsernameGenerationOptions(nonSecretOptions)
     }
 }

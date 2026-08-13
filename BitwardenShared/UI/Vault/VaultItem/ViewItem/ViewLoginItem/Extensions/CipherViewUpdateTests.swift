@@ -65,6 +65,32 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
         XCTAssertTrue(loginItemState.fido2Credentials.isEmpty)
     }
 
+    /// Updating a login with an alias binding preserves every FIDO2 credential field exactly.
+    func test_loginViewUpdate_preservesAliasAndFido2Credentials() {
+        let credential = Fido2Credential.fixture(
+            counter: "7",
+            credentialId: "credential-id",
+            discoverable: "true",
+            keyAlgorithm: "ES256",
+            keyCurve: "P-256",
+            keyType: "public-key",
+            keyValue: "key-value",
+            rpId: "example.com",
+            rpName: "Example",
+            userDisplayName: "User",
+            userHandle: "handle",
+            userName: "user@example.com",
+        )
+        var loginState = LoginItemState(isTOTPAvailable: false, totpState: .none)
+        loginState.aliasReference = "canonical-reference"
+        loginState.fido2Credentials = [credential]
+
+        let updated = LoginView(loginView: .fixture(fido2Credentials: [credential]), loginState: loginState)
+
+        XCTAssertEqual(updated.aliasReference, "canonical-reference")
+        XCTAssertEqual(updated.fido2Credentials, [credential])
+    }
+
     /// `driversLicenseItemState()` returns the driver's license item state from the cipher view,
     /// reading every field.
     func test_driversLicenseItemState() { // swiftlint:disable:this function_body_length

@@ -59,6 +59,20 @@ class GeneratorCoordinatorTests: BitwardenTestCase {
         XCTAssertEqual(delegate.didCompleteGeneratorValue, "email@example.com")
     }
 
+    /// Alias completion forwards the binding before preserving the existing completion callback.
+    @MainActor
+    func test_navigateTo_completeWithAliasReference() {
+        subject.navigate(to: .complete(
+            type: .username,
+            value: "alias@example.com",
+            aliasReference: "canonical-reference",
+        ))
+
+        XCTAssertEqual(delegate.didCreateEmailAliasReference, "canonical-reference")
+        XCTAssertTrue(delegate.didCompleteGeneratorCalled)
+        XCTAssertEqual(delegate.didCompleteGeneratorValue, "alias@example.com")
+    }
+
     /// `navigate(to:)` with `.generator` and a delegate pushes the generator view onto the stack
     /// navigator.
     @MainActor
@@ -204,6 +218,7 @@ class MockGeneratorCoordinatorDelegate: GeneratorCoordinatorDelegate {
     var didCompleteGeneratorCalled = false
     var didCompleteGeneratorType: GeneratorType?
     var didCompleteGeneratorValue: String?
+    var didCreateEmailAliasReference: String?
 
     func didCancelGenerator() {
         didCancelGeneratorCalled = true
@@ -213,5 +228,9 @@ class MockGeneratorCoordinatorDelegate: GeneratorCoordinatorDelegate {
         didCompleteGeneratorCalled = true
         didCompleteGeneratorType = type
         didCompleteGeneratorValue = value
+    }
+
+    func didCreateEmailAlias(reference: String) {
+        didCreateEmailAliasReference = reference
     }
 }

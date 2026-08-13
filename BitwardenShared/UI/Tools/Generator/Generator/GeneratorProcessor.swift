@@ -2,6 +2,7 @@ import BitwardenKit
 import BitwardenResources
 import BitwardenSdk
 import OSLog
+import UIKit
 
 /// The processor used to manage state and handle actions for the generator screen.
 ///
@@ -18,6 +19,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         & HasPolicyService
         & HasReviewPromptService
         & HasStateService
+        & HasVaultTimeoutService
 
     /// The behavior that should be taken after receiving a new action for generating a new value
     /// and persisting it.
@@ -54,6 +56,12 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
     /// The task used to generate a new value so it can be cancelled if needed.
     private var generateValueTask: Task<Void, Never>?
 
+    /// Clears view-owned decrypted alias state on logout or account switch.
+    private var accountLifecycleTask: Task<Void, Never>?
+
+    /// Clears view-owned decrypted alias state whenever the active vault locks.
+    private var vaultLifecycleTask: Task<Void, Never>?
+
     /// The task used to load the generator options.
     private var loadGeneratorOptionsTask: Task<Void, Error>?
 
@@ -81,6 +89,38 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         loadGeneratorOptionsTask = Task {
             try await loadGeneratorOptions()
         }
+        let lifecycleRepository = services.generatorRepository
+        let lifecycleStateService = services.stateService
+        accountLifecycleTask = Task { [weak self] in
+            var previousAccountId = try? await lifecycleStateService.getActiveAccountId()
+            for await accountId in await lifecycleStateService.activeAccountIdPublisher().values {
+                guard !Task.isCancelled, let self else { return }
+                if accountId != previousAccountId {
+                    clearEmailAliasState()
+                    await lifecycleRepository.cancelEmailAliasOperations()
+                    previousAccountId = accountId
+                }
+            }
+        }
+        let lifecycleVaultTimeoutService = services.vaultTimeoutService
+        vaultLifecycleTask = Task { [weak self] in
+            for await lockStatus in await lifecycleVaultTimeoutService.vaultLockStatusPublisher().values {
+                guard !Task.isCancelled, let self else { return }
+                if lockStatus == nil || lockStatus?.isVaultLocked == true {
+                    clearEmailAliasState()
+                    await lifecycleRepository.cancelEmailAliasOperations()
+                }
+            }
+        }
+    }
+
+    deinit {
+        accountLifecycleTask?.cancel()
+        generateValueTask?.cancel()
+        loadGeneratorOptionsTask?.cancel()
+        vaultLifecycleTask?.cancel()
+        let repository = services.generatorRepository
+        Task { await repository.cancelEmailAliasOperations() }
     }
 
     // MARK: Methods
@@ -89,7 +129,11 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         switch effect {
         case .appeared:
             await reloadGeneratorOptions()
-            await generateValue(shouldSavePassword: true)
+            if state.isSimpleLoginAlias {
+                await loadCachedEmailAlias()
+            } else if !state.isForwardedEmailAlias {
+                await generateValue(shouldSavePassword: true)
+            }
             await checkLearnGeneratorActionCardEligibility()
             state.shouldShowUpgradedToPremiumActionCard = await services.billingService
                 .shouldShowUpgradedToPremiumActionCard()
@@ -107,7 +151,8 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         }
     }
 
-    override func receive(_ action: GeneratorAction) { // swiftlint:disable:this function_body_length
+    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    override func receive(_ action: GeneratorAction) {
         var generateValueBehavior: GenerateValueBehavior? = action.shouldGenerateNewValue
             ? .generateNewValue(shouldSave: true)
             : nil
@@ -122,14 +167,27 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
                 await services.reviewPromptService.trackUserAction(.copiedOrInsertedGeneratedValue)
             }
         case .dismissPressed:
+            generateValueTask?.cancel()
+            clearEmailAliasState()
+            Task { await services.generatorRepository.cancelEmailAliasOperations() }
             coordinator.navigate(to: .cancel)
+        case .deleteEmailAlias:
+            startEmailAliasLifecycleTask { try await self.deleteEmailAlias() }
+        case let .emailAliasEnabledChanged(enabled):
+            startEmailAliasLifecycleTask { try await self.setEmailAliasEnabled(enabled) }
         case let .emailTypeChanged(emailType):
             state.usernameState.updateEmailType(emailType)
+        case .reconcileEmailAliases:
+            startEmailAliasLifecycleTask { try await self.reconcileEmailAliases() }
         case .fillGeneratedValue:
+            guard !state.generatedValue.isEmpty,
+                  state.emailAliasResult?.status != .deleted
+            else { return }
             coordinator.navigate(
                 to: .complete(
                     type: state.generatorType,
                     value: state.generatedValue,
+                    aliasReference: state.emailAliasResult?.reference,
                 ),
             )
             Task {
@@ -170,6 +228,11 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
             guard value != state[keyPath: field.keyPath] else { return }
             state[keyPath: field.keyPath] = value
 
+            if state.isForwardedEmailAlias {
+                state.emailAliasResult = nil
+                state.generatedValue = ""
+            }
+
             if field.keyPath == \.passwordState.wordSeparator, value.count > 1 {
                 state[keyPath: field.keyPath] = String(value.prefix(1))
             }
@@ -184,14 +247,25 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
             state[keyPath: field.keyPath] = isOn
         case let .usernameForwardedEmailServiceChanged(forwardedEmailService):
             state.usernameState.forwardedEmailService = forwardedEmailService
+            state.emailAliasResult = nil
+            state.generatedValue = ""
         case let .usernameGeneratorTypeChanged(usernameGeneratorType):
             state.usernameState.usernameGeneratorType = usernameGeneratorType
+            state.emailAliasResult = nil
+        case .viewDisappeared:
+            generateValueTask?.cancel()
+            clearEmailAliasState()
+            Task { await services.generatorRepository.cancelEmailAliasOperations() }
         case let .guidedTourViewAction(action):
             state.guidedTourViewState.updateStateForGuidedTourViewAction(action)
         case .learnMoreAboutPremium:
             state.url = ExternalLinksConstants.learnMoreAboutPremium
             state.shouldShowUpgradedToPremiumActionCard = false
             Task { await services.billingService.setUpgradedToPremiumActionCardDismissed() }
+        }
+
+        if state.isForwardedEmailAlias, action != .refreshGeneratedValue {
+            generateValueBehavior = nil
         }
 
         if let generateValueBehavior {
@@ -261,6 +335,21 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
     func generateUsername() async {
         state.generatedValue = Constants.defaultGeneratedUsername
         do {
+            if state.isSimpleLoginAlias {
+                announce(Localizations.emailAliasCreating)
+                let result = try await services.generatorRepository.createEmailAlias(
+                    token: state.usernameState.simpleLoginAPIKey,
+                    baseUrl: state.usernameState.simpleLoginSelfHostServerUrl,
+                    hostname: state.usernameState.emailWebsite,
+                )
+                try Task.checkCancellation()
+                state.emailAliasResult = result
+                try await setGeneratedValue(result.address)
+                announce(result.status == .unknown
+                    ? Localizations.emailAliasOutcomeUnknown
+                    : Localizations.emailAliasCreated)
+                return
+            }
             guard let usernameGeneratorRequest = try state.usernameState.usernameGeneratorRequest() else {
                 return
             }
@@ -273,8 +362,12 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         } catch is CancellationError {
             // No-op: don't log or alert for cancellation errors.
         } catch {
-            await coordinator.showErrorAlert(error: error)
-            Logger.application.error("Generator: error generating username: \(error)")
+            if state.isForwardedEmailAlias {
+                showEmailAliasError(error)
+            } else {
+                await coordinator.showErrorAlert(error: error)
+                Logger.application.error("Generator: error generating username: \(error)")
+            }
         }
     }
 
@@ -330,6 +423,107 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         let usernameOptions = try await services.generatorRepository.getUsernameGenerationOptions()
         state.usernameState.update(with: usernameOptions)
         didLoadGeneratorOptions = true
+    }
+
+    /// Loads a cached alias from the encrypted local vault without contacting the provider.
+    private func loadCachedEmailAlias() async {
+        do {
+            guard let profile = try await services.generatorRepository.loadEmailAliasProfile(
+                baseUrl: state.usernameState.simpleLoginSelfHostServerUrl,
+            ) else { return }
+            state.usernameState.simpleLoginAPIKey = profile.token
+            state.usernameState.simpleLoginSelfHostServerUrl = profile.baseUrl
+            if let alias = profile.cachedAlias, alias.status != .deleted {
+                state.emailAliasResult = alias
+                state.generatedValue = alias.address
+                announce(emailAliasStatusAnnouncement(alias.status))
+            }
+        } catch is CancellationError {
+            // Cancellation is expected on lock, logout, account switch, and extension expiry.
+        } catch {
+            showEmailAliasError(error)
+        }
+    }
+
+    /// Starts one explicit alias lifecycle operation, cancelling any previous operation.
+    private func startEmailAliasLifecycleTask(
+        _ operation: @escaping @MainActor () async throws -> Void,
+    ) {
+        generateValueTask?.cancel()
+        generateValueTask = Task {
+            do {
+                try await operation()
+            } catch is CancellationError {
+                // Cancellation is expected during vault lifecycle transitions.
+            } catch {
+                showEmailAliasError(error)
+            }
+        }
+    }
+
+    private func setEmailAliasEnabled(_ enabled: Bool) async throws {
+        guard let alias = state.emailAliasResult else { return }
+        let updated = try await services.generatorRepository.setEmailAliasEnabled(alias, enabled: enabled)
+        try Task.checkCancellation()
+        state.emailAliasResult = updated
+        announce(emailAliasStatusAnnouncement(updated.status))
+    }
+
+    private func deleteEmailAlias() async throws {
+        guard let alias = state.emailAliasResult else { return }
+        let deleted = try await services.generatorRepository.deleteEmailAlias(alias)
+        try Task.checkCancellation()
+        state.emailAliasResult = deleted
+        state.generatedValue = ""
+        announce(Localizations.emailAliasDeleted)
+    }
+
+    private func reconcileEmailAliases() async throws {
+        let alias = try await services.generatorRepository.reconcileEmailAliases(
+            baseUrl: state.usernameState.simpleLoginSelfHostServerUrl,
+        )
+        try Task.checkCancellation()
+        state.emailAliasResult = alias
+        state.generatedValue = alias?.address ?? ""
+        if let alias {
+            announce(emailAliasStatusAnnouncement(alias.status))
+        }
+    }
+
+    private func clearEmailAliasState() {
+        if state.emailAliasResult != nil {
+            state.generatedValue = ""
+        }
+        state.emailAliasResult = nil
+        state.usernameState.simpleLoginAPIKey = ""
+    }
+
+    private func emailAliasStatusAnnouncement(_ status: EmailAliasLifecycleStatus) -> String {
+        switch status {
+        case .enabled: Localizations.emailAliasStatusEnabled
+        case .disabled: Localizations.emailAliasStatusDisabled
+        case .deleted: Localizations.emailAliasStatusDeleted
+        case .unknown: Localizations.emailAliasStatusUnknown
+        case .conflict: Localizations.emailAliasStatusConflict
+        }
+    }
+
+    private func showEmailAliasError(_ error: Error) {
+        let message: String = switch error {
+        case EmailAliasError.operationOutcomeUnknown:
+            Localizations.emailAliasOutcomeUnknown
+        case EmailAliasError.conflict,
+             EmailAliasError.invalidEncryptedState:
+            Localizations.emailAliasConflict
+        default:
+            Localizations.anErrorHasOccurred
+        }
+        announce(message)
+        coordinator.showAlert(.defaultAlert(title: message))
+    }
+
+    private func announce(_ message: String) {
+        UIAccessibility.post(notification: .announcement, argument: message)
     }
 
     /// Re-loads generator options.

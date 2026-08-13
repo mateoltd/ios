@@ -64,11 +64,17 @@ struct DefaultCiphersClientWrapperService: CiphersClientWrapperService {
             let end = min(start + batchSize, ciphers.count)
 
             do {
+                let encryptedBatch = try Array(ciphers[start ..< end].filter(preFilter))
                 let decryptResult = try await clientService.vault().ciphers().decryptListWithFailures(
-                    ciphers: Array(ciphers[start ..< end].filter(preFilter)),
+                    ciphers: encryptedBatch,
+                )
+                let visibleCiphers = await excludingAliasConnectionCarriers(
+                    decryptResult.successes,
+                    encryptedCiphers: encryptedBatch,
+                    decrypt: { try await clientService.vault().ciphers().decrypt(cipher: $0) },
                 )
 
-                for decryptedCipher in decryptResult.successes {
+                for decryptedCipher in visibleCiphers {
                     try await onCipher(decryptedCipher)
                 }
 

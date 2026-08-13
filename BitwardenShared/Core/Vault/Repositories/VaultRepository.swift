@@ -594,7 +594,10 @@ extension DefaultVaultRepository: VaultRepository {
 
     func fetchCipher(withId id: String) async throws -> CipherView? {
         guard let cipher = try await cipherService.fetchCipher(withId: id) else { return nil }
-        return try? await clientService.vault().ciphers().decrypt(cipher: cipher)
+        guard let view = try? await clientService.vault().ciphers().decrypt(cipher: cipher),
+              !view.isAliasConnectionCarrier
+        else { return nil }
+        return view
     }
 
     func fetchCipherOwnershipOptions(includePersonal: Bool) async throws -> [CipherOwner] {
@@ -734,12 +737,28 @@ extension DefaultVaultRepository: VaultRepository {
         return totp
     }
 
+    /// Counts user-visible vault items without exposing the encrypted alias connection carrier.
+    private func visibleCipherCount(rawCount: Int) async throws -> Int {
+        guard rawCount > 0 else { return 0 }
+        let ciphers = try await cipherService.fetchAllCiphers()
+        let result = try await clientService.vault().ciphers().decryptListWithFailures(ciphers: ciphers)
+        let visible = await excludingAliasConnectionCarriers(
+            result.successes,
+            encryptedCiphers: ciphers,
+            decrypt: { try await self.clientService.vault().ciphers().decrypt(cipher: $0) },
+        )
+        return visible.count + result.failures.count
+    }
+
     func hasMinimumCipherCount(_ count: Int) async throws -> Bool {
-        try await cipherService.cipherCount() >= count
+        let rawCount = try await cipherService.cipherCount()
+        guard rawCount >= count else { return false }
+        return try await visibleCipherCount(rawCount: rawCount) >= count
     }
 
     func isVaultEmpty() async throws -> Bool {
-        try await cipherService.cipherCount() == 0
+        let rawCount = try await cipherService.cipherCount()
+        return try await visibleCipherCount(rawCount: rawCount) == 0
     }
 
     func migratePersonalVault(to organizationId: String) async throws {
@@ -764,7 +783,9 @@ extension DefaultVaultRepository: VaultRepository {
         // Decrypt personal ciphers to CipherViews.
         let cipherViews = try await personalCiphers.asyncMap { cipher in
             try await clientService.vault().ciphers().decrypt(cipher: cipher)
-        }
+        }.filter { !$0.isAliasConnectionCarrier }
+
+        guard !cipherViews.isEmpty else { return }
 
         // Share all personal vault ciphers with the organization's default collection.
         try await bulkShareCiphers(cipherViews, newOrganizationId: organizationId, newCollectionIds: [collectionId])
@@ -932,9 +953,12 @@ extension DefaultVaultRepository: VaultRepository {
     func cipherPublisher() async throws -> AsyncThrowingPublisher<AnyPublisher<[CipherListView], Error>> {
         try await cipherService.ciphersPublisher()
             .asyncTryMap { ciphers in
-                try await self.clientService.vault().ciphers().decryptListWithFailures(ciphers: ciphers)
-                    .successes
-                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                let result = try await self.clientService.vault().ciphers().decryptListWithFailures(ciphers: ciphers)
+                return await excludingAliasConnectionCarriers(
+                    result.successes,
+                    encryptedCiphers: ciphers,
+                    decrypt: { try await self.clientService.vault().ciphers().decrypt(cipher: $0) },
+                ).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             }
             .eraseToAnyPublisher()
             .values
@@ -944,7 +968,8 @@ extension DefaultVaultRepository: VaultRepository {
         try await cipherService.ciphersPublisher()
             .asyncTryMap { ciphers -> CipherView? in
                 guard let cipher = ciphers.first(where: { $0.id == id }) else { return nil }
-                return try await self.clientService.vault().ciphers().decrypt(cipher: cipher)
+                let view = try await self.clientService.vault().ciphers().decrypt(cipher: cipher)
+                return view.isAliasConnectionCarrier ? nil : view
             }
             .eraseToAnyPublisher()
             .values
