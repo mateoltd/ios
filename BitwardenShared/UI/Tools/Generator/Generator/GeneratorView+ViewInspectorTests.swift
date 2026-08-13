@@ -137,6 +137,51 @@ class GeneratorViewTests: BitwardenTestCase {
         XCTAssertEqual(processor.dispatchedActions.last, .usernameForwardedEmailServiceChanged(.fastmail))
     }
 
+    /// Alias lifecycle controls expose stable accessibility identifiers and dispatch only explicit actions.
+    @MainActor
+    func test_emailAliasLifecycleControls_dispatchExplicitActions() throws {
+        configureEmailAlias(status: .enabled)
+
+        let status = try subject.inspect().find(viewWithAccessibilityIdentifier: "EmailAliasStatus")
+        XCTAssertEqual(try status.text().string(), Localizations.emailAliasStatusEnabled)
+
+        let enabledButton = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "EmailAliasEnabledButton")
+            .button()
+        try enabledButton.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .emailAliasEnabledChanged(false))
+
+        let reconcileButton = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "ReconcileEmailAliasesButton")
+            .button()
+        try reconcileButton.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .reconcileEmailAliases)
+
+        let deleteButton = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "DeleteEmailAliasButton")
+            .button()
+        try deleteButton.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .deleteEmailAlias)
+    }
+
+    /// A deleted alias announces its terminal state without exposing invalid lifecycle actions.
+    @MainActor
+    func test_emailAliasLifecycleControls_deletedState() throws {
+        configureEmailAlias(status: .deleted)
+
+        let status = try subject.inspect().find(viewWithAccessibilityIdentifier: "EmailAliasStatus")
+        XCTAssertEqual(try status.text().string(), Localizations.emailAliasStatusDeleted)
+        XCTAssertThrowsError(
+            try subject.inspect().find(viewWithAccessibilityIdentifier: "EmailAliasEnabledButton"),
+        )
+        XCTAssertThrowsError(
+            try subject.inspect().find(viewWithAccessibilityIdentifier: "DeleteEmailAliasButton"),
+        )
+        XCTAssertNoThrow(
+            try subject.inspect().find(viewWithAccessibilityIdentifier: "ReconcileEmailAliasesButton"),
+        )
+    }
+
     /// Tapping the password history button dispatches the `.showPasswordHistory` action.
     @MainActor
     func test_showPasswordHistory_tapped() throws {
@@ -229,5 +274,28 @@ class GeneratorViewTests: BitwardenTestCase {
         let toggle = try subject.inspect().find(toggleWithAccessibilityLabel: Localizations.lowercaseAtoZ)
         try toggle.tap()
         XCTAssertEqual(processor.dispatchedActions.last, .toggleValueChanged(field: field, isOn: false))
+    }
+
+    // MARK: Private
+
+    @MainActor
+    private func configureEmailAlias(status: EmailAliasLifecycleStatus) {
+        processor.state.generatorType = .username
+        processor.state.usernameState.usernameGeneratorType = .forwardedEmail
+        processor.state.usernameState.forwardedEmailService = .simpleLogin
+        let identity = EmailAliasIdentity(
+            version: AliasConnectionSchema.version,
+            provider: "simplelogin",
+            providerInstance: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            aliasId: "42",
+            address: "alias@example.test",
+        )
+        processor.state.emailAliasResult = EmailAliasResult(
+            address: identity.address,
+            reference: "encrypted-alias-reference",
+            identity: identity,
+            status: status,
+        )
     }
 }

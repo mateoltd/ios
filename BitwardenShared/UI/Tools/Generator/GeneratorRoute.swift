@@ -5,7 +5,7 @@ public enum GeneratorRoute: Equatable, Hashable {
     case cancel
 
     /// A route to complete the generator with the provided value
-    case complete(type: GeneratorType, value: String)
+    case complete(type: GeneratorType, value: String, aliasReference: String? = nil)
 
     /// A route that dismisses a presented sheet.
     case dismiss

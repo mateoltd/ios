@@ -293,6 +293,7 @@ final class AddEditItemProcessor: StateProcessor<// swiftlint:disable:this type_
             }
         case let .usernameChanged(newValue):
             state.loginState.username = newValue
+            reconcileAliasReferenceWithUsername()
         }
     }
 
@@ -1128,8 +1129,31 @@ extension AddEditItemProcessor: GeneratorCoordinatorDelegate {
             state.loginState.password = value
         case .username:
             state.loginState.username = value
+            reconcileAliasReferenceWithUsername()
         }
         coordinator.navigate(to: .dismiss())
+    }
+
+    func didCreateEmailAlias(reference: String) {
+        guard (try? parseAliasReference(value: reference)) != nil else {
+            state.loginState.aliasReference = nil
+            return
+        }
+        state.loginState.aliasReference = reference
+    }
+
+    /// A binding is valid only while the saved login username still represents that alias.
+    private func reconcileAliasReferenceWithUsername() {
+        guard let reference = state.loginState.aliasReference,
+              let alias = try? parseAliasReference(value: reference),
+              alias.address.trimmingCharacters(in: .whitespacesAndNewlines)
+              .localizedCaseInsensitiveCompare(
+                  state.loginState.username.trimmingCharacters(in: .whitespacesAndNewlines),
+              ) == .orderedSame
+        else {
+            state.loginState.aliasReference = nil
+            return
+        }
     }
 }
 

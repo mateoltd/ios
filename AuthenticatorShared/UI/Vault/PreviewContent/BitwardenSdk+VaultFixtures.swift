@@ -508,6 +508,7 @@ extension BitwardenSdk.IdentityView {
 extension BitwardenSdk.Login {
     static func fixture(
         autofillOnPageLoad: Bool? = nil,
+        aliasReference: EncString? = nil,
         fido2Credentials: [Fido2Credential]? = nil,
         password: String? = nil,
         passwordRevisionDate: Date? = nil,
@@ -518,6 +519,7 @@ extension BitwardenSdk.Login {
         BitwardenSdk.Login(
             username: username,
             password: password,
+            aliasReference: aliasReference,
             passwordRevisionDate: passwordRevisionDate,
             uris: uris,
             totp: totp,
@@ -529,6 +531,7 @@ extension BitwardenSdk.Login {
 
 extension BitwardenSdk.LoginView {
     static func fixture(
+        aliasReference: String? = nil,
         fido2Credentials: [Fido2Credential]? = nil,
         password: String? = nil,
         passwordRevisionDate: DateTime? = nil,
@@ -540,6 +543,7 @@ extension BitwardenSdk.LoginView {
         BitwardenSdk.LoginView(
             username: username,
             password: password,
+            aliasReference: aliasReference,
             passwordRevisionDate: passwordRevisionDate,
             uris: uris,
             totp: totp,

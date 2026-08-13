@@ -210,7 +210,7 @@ class DefaultExportVaultService: ExportVaultService {
 
     func fetchAllCiphersToExport(includeArchivedItems: Bool) async throws -> [Cipher] {
         let restrictedTypes = await policyService.getRestrictedItemCipherTypes()
-        return try await cipherService.fetchAllCiphers().filter { cipher in
+        let ciphers = try await cipherService.fetchAllCiphers().filter { cipher in
             // Always exclude deleted items
             if cipher.deletedDate != nil {
                 return false
@@ -225,6 +225,18 @@ class DefaultExportVaultService: ExportVaultService {
             return cipher.organizationId == nil
                 && !restrictedTypes.contains(BitwardenShared.CipherType(type: cipher.type))
         }
+
+        var exportableCiphers = [Cipher]()
+        for cipher in ciphers {
+            if cipher.type == .secureNote {
+                let view = try await clientService.vault().ciphers().decrypt(cipher: cipher)
+                if view.isAliasConnectionCarrier {
+                    continue
+                }
+            }
+            exportableCiphers.append(cipher)
+        }
+        return exportableCiphers
     }
 
     func generateExportFileName(

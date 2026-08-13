@@ -1,5 +1,5 @@
 {
-  "originHash" : "bde128d30b1cfe9a2a1705335aa08196602e4a15eef690d93c4edbbb654cf005",
+  "originHash" : "de5f9b50e82e6b7034fe345be137bc81cfdbdb16c196af2901b8336435497a01",
   "pins" : [
     {
       "identity" : "abseil-cpp-binary",
@@ -121,9 +121,9 @@
     {
       "identity" : "sdk-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/bitwarden/sdk-swift",
+      "location" : "https://github.com/mateoltd/sdk-swift",
       "state" : {
-        "revision" : "3dbc27249f48fcb88c56739ece52e2335701de0b"
+        "revision" : "858d31ac18214e47c5264fc73da8c9885565bda0"
       }
     },
     {
@@ -133,15 +133,6 @@
       "state" : {
         "revision" : "82645ec760917961cfa08c9c0c7104a57a0fa4b1",
         "version" : "1.3.3"
-      }
-    },
-    {
-      "identity" : "swift-protobuf",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-protobuf.git",
-      "state" : {
-        "revision" : "f6506eaa86ed2e01cb0ae14a75035b7fdbf0918f",
-        "version" : "1.38.0"
       }
     },
     {

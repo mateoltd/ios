@@ -543,6 +543,7 @@ extension AppProcessor {
         Task {
             for await _ in services.notificationCenterService.didEnterBackgroundPublisher() {
                 stopEventTimer()
+                await services.generatorRepository.cancelEmailAliasOperations()
                 do {
                     let userId = try await self.services.stateService.getActiveAccountId()
                     try await services.vaultTimeoutService.setLastActiveTime(userId: userId)

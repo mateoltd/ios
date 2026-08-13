@@ -34,6 +34,7 @@ struct ViewSendItemState: Equatable {
         switch sendView.type {
         case .file: Localizations.viewFileSend
         case .text: Localizations.viewTextSend
+        case .item: Localizations.send
         }
     }
 }

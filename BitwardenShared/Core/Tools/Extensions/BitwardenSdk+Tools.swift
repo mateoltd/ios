@@ -58,6 +58,8 @@ extension SendType {
             self = .file
         case .text:
             self = .text
+        case .item:
+            self = .unknown
         }
     }
 }

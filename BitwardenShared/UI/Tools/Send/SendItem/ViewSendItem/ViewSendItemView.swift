@@ -180,6 +180,8 @@ struct ViewSendItemView: View {
                         valueAccessibilityIdentifier: "ViewSendContentText",
                     )
                 }
+            case .item:
+                EmptyView()
             }
 
             BitwardenTextValueField(

@@ -45,6 +45,8 @@ extension SendListItem {
                 SharedAsset.Icons.file24
             case .text:
                 SharedAsset.Icons.fileText24
+            case .item:
+                SharedAsset.Icons.fileText24
             }
         case let .group(group, _):
             switch group {

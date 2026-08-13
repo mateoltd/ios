@@ -211,6 +211,7 @@ extension CipherLoginModel {
         self.init(
             autofillOnPageLoad: login.autofillOnPageLoad,
             fido2Credentials: login.fido2Credentials?.map(CipherLoginFido2Credential.init),
+            aliasReference: login.aliasReference,
             password: login.password,
             passwordRevisionDate: login.passwordRevisionDate,
             totp: login.totp,
@@ -605,6 +606,7 @@ extension BitwardenSdk.CipherView: @retroactive Identifiable, Fido2UserVerifiabl
             login: BitwardenSdk.LoginView(
                 username: fido2CredentialNewView.userName ?? "",
                 password: nil,
+                aliasReference: nil,
                 passwordRevisionDate: nil,
                 uris: [
                     LoginUriView(uri: fido2CredentialNewView.rpId, match: nil, uriChecksum: nil),
@@ -757,15 +759,62 @@ extension BitwardenSdk.LocalUserDataKeyState {
 }
 
 extension BitwardenSdk.Login {
+    /// Preserves the pre-alias source API for callers that intentionally create an unbound login.
+    init(
+        username: EncString?,
+        password: EncString?,
+        passwordRevisionDate: DateTime?,
+        uris: [LoginUri]?,
+        totp: EncString?,
+        autofillOnPageLoad: Bool?,
+        fido2Credentials: [Fido2Credential]?,
+    ) {
+        self.init(
+            username: username,
+            password: password,
+            aliasReference: nil,
+            passwordRevisionDate: passwordRevisionDate,
+            uris: uris,
+            totp: totp,
+            autofillOnPageLoad: autofillOnPageLoad,
+            fido2Credentials: fido2Credentials,
+        )
+    }
+
     init(cipherLoginModel model: CipherLoginModel) {
         self.init(
             username: model.username,
             password: model.password,
+            aliasReference: model.aliasReference,
             passwordRevisionDate: model.passwordRevisionDate,
             uris: model.uris?.map(LoginUri.init),
             totp: model.totp,
             autofillOnPageLoad: model.autofillOnPageLoad,
             fido2Credentials: model.fido2Credentials?.map(Fido2Credential.init),
+        )
+    }
+}
+
+extension BitwardenSdk.LoginView {
+    /// Preserves the pre-alias source API for callers that intentionally create an unbound login.
+    init(
+        username: String?,
+        password: String?,
+        passwordRevisionDate: DateTime?,
+        uris: [LoginUriView]?,
+        totp: String?,
+        autofillOnPageLoad: Bool?,
+        fido2Credentials: [Fido2Credential]?,
+    ) {
+        self.init(
+            username: username,
+            password: password,
+            aliasReference: nil,
+            passwordRevisionDate: passwordRevisionDate,
+            uris: uris,
+            totp: totp,
+            autofillOnPageLoad: autofillOnPageLoad,
+            fido2Credentials: fido2Credentials,
         )
     }
 }

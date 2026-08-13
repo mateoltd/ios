@@ -156,6 +156,7 @@ extension CipherView {
         showTOTP: Bool,
     ) -> LoginItemState {
         LoginItemState(
+            aliasReference: login?.aliasReference,
             canViewPassword: viewPassword,
             editView: edit,
             fido2Credentials: excludeFido2Credentials ? [] : login?.fido2Credentials ?? [],
@@ -481,6 +482,7 @@ extension BitwardenSdk.LoginView {
         BitwardenSdk.LoginView(
             username: username,
             password: password,
+            aliasReference: aliasReference,
             passwordRevisionDate: passwordRevisionDate,
             uris: uris,
             totp: totp,

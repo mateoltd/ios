@@ -548,6 +548,89 @@ class AddEditItemProcessorTests: BitwardenTestCase {
         XCTAssertEqual(subject.state.loginState.password, "password123")
     }
 
+    /// A canonical alias binding is saved with the username without modifying passkey request data.
+    @MainActor
+    func test_didCreateEmailAlias_preservesLoginAndPasskeyData() throws {
+        let credential = Fido2Credential.fixture(
+            credentialId: "credential-id",
+            rpId: "example.com",
+            userName: "user",
+        )
+        let reference = try serializeAliasReference(reference: AliasReference(
+            version: 1,
+            provider: .simpleLogin,
+            providerInstance: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            aliasId: 42,
+            address: "alias@example.com",
+        ))
+        subject.state.loginState.fido2Credentials = [credential]
+
+        subject.didCreateEmailAlias(reference: reference)
+        subject.didCompleteGenerator(for: .username, with: "alias@example.com")
+
+        XCTAssertEqual(subject.state.loginState.aliasReference, reference)
+        XCTAssertEqual(subject.state.loginState.username, "alias@example.com")
+        XCTAssertEqual(subject.state.loginState.fido2Credentials, [credential])
+    }
+
+    /// A malformed binding is discarded without losing the generated login or passkey data.
+    @MainActor
+    func test_didCreateEmailAlias_invalidBindingDoesNotLoseLogin() {
+        let credential = Fido2Credential.fixture(credentialId: "credential-id", rpId: "example.com")
+        subject.state.loginState.fido2Credentials = [credential]
+
+        subject.didCreateEmailAlias(reference: "not-a-canonical-reference")
+        subject.didCompleteGenerator(for: .username, with: "alias@example.com")
+
+        XCTAssertNil(subject.state.loginState.aliasReference)
+        XCTAssertEqual(subject.state.loginState.username, "alias@example.com")
+        XCTAssertEqual(subject.state.loginState.fido2Credentials, [credential])
+    }
+
+    /// A generated reference cannot be attached to a different generated username.
+    @MainActor
+    func test_didCreateEmailAlias_mismatchedUsernameClearsBindingOnly() throws {
+        let reference = try serializeAliasReference(reference: AliasReference(
+            version: 1,
+            provider: .simpleLogin,
+            providerInstance: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            aliasId: 42,
+            address: "alias@example.com",
+        ))
+        subject.state.loginState.password = "password"
+        subject.didCreateEmailAlias(reference: reference)
+
+        subject.didCompleteGenerator(for: .username, with: "different@example.com")
+
+        XCTAssertNil(subject.state.loginState.aliasReference)
+        XCTAssertEqual(subject.state.loginState.username, "different@example.com")
+        XCTAssertEqual(subject.state.loginState.password, "password")
+    }
+
+    /// Editing a bound username clears only the stale binding.
+    @MainActor
+    func test_receive_usernameChanged_clearsStaleAliasBinding() throws {
+        let reference = try serializeAliasReference(reference: AliasReference(
+            version: 1,
+            provider: .simpleLogin,
+            providerInstance: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            aliasId: 42,
+            address: "alias@example.com",
+        ))
+        subject.state.loginState.username = "alias@example.com"
+        subject.state.loginState.password = "password"
+        subject.state.loginState.aliasReference = reference
+
+        subject.receive(.usernameChanged("edited@example.com"))
+
+        XCTAssertNil(subject.state.loginState.aliasReference)
+        XCTAssertEqual(subject.state.loginState.username, "edited@example.com")
+        XCTAssertEqual(subject.state.loginState.password, "password")
+    }
+
     /// `didCompleteCapture` with a value updates the state with the new auth key value
     /// and navigates to the `.dismiss` route.
     @MainActor
