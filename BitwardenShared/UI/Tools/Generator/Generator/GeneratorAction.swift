@@ -12,6 +12,18 @@ enum GeneratorAction: Equatable {
     /// The dismiss button was pressed
     case dismissPressed
 
+    /// The user explicitly requested deletion of the current alias.
+    case deleteEmailAlias
+
+    /// The user explicitly requested a forwarding-state change.
+    case emailAliasEnabledChanged(Bool)
+
+    /// The user explicitly requested reconciliation with the provider.
+    case reconcileEmailAliases
+
+    /// The generator view disappeared and must release decrypted alias state.
+    case viewDisappeared
+
     /// The email type was changed.
     case emailTypeChanged(UsernameEmailType)
 
@@ -85,14 +97,18 @@ extension GeneratorAction {
             keyPath == nil
         case .clearUrl,
              .copyGeneratedValue,
+             .deleteEmailAlias,
              .dismissPressed,
+             .emailAliasEnabledChanged,
              .guidedTourViewAction,
              .learnMoreAboutPremium,
+             .reconcileEmailAliases,
              .selectButtonPressed,
              .showPasswordHistory,
              .sliderEditingChanged,
              .textFieldIsPasswordVisibleChanged,
-             .toastShown:
+             .toastShown,
+             .viewDisappeared:
             false
         }
     }

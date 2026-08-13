@@ -5,6 +5,9 @@ import Foundation
 struct CipherLoginModel: Codable, Equatable {
     // MARK: Properties
 
+    /// The encrypted, canonical reference to an email alias managed by a provider.
+    let aliasReference: String?
+
     /// Whether the login should be autofilled when the page loads.
     let autofillOnPageLoad: Bool?
 
@@ -25,4 +28,24 @@ struct CipherLoginModel: Codable, Equatable {
 
     /// The login's username.
     let username: String?
+
+    init(
+        autofillOnPageLoad: Bool?,
+        fido2Credentials: [CipherLoginFido2Credential]?,
+        aliasReference: String? = nil,
+        password: String?,
+        passwordRevisionDate: Date?,
+        totp: String?,
+        uris: [CipherLoginUriModel]?,
+        username: String?,
+    ) {
+        self.autofillOnPageLoad = autofillOnPageLoad
+        self.fido2Credentials = fido2Credentials
+        self.aliasReference = aliasReference
+        self.password = password
+        self.passwordRevisionDate = passwordRevisionDate
+        self.totp = totp
+        self.uris = uris
+        self.username = username
+    }
 }

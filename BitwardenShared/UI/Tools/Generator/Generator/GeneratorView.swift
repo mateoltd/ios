@@ -35,6 +35,7 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
             .background(SharedAsset.Colors.backgroundPrimary.swiftUIColor)
             .navigationBar(title: Localizations.generator, titleDisplayMode: .inline)
             .task { await store.perform(.appeared) }
+            .onDisappear { store.send(.viewDisappeared) }
             .onChange(of: focusedFieldKeyPath) { newValue in
                 store.send(.textFieldFocusChanged(keyPath: newValue))
             }
@@ -161,6 +162,11 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
 
                 ForEach(store.state.formSections) { section in
                     sectionView(section, geometryProxy: geometry)
+                }
+
+                if store.state.isSimpleLoginAlias,
+                   let alias = store.state.emailAliasResult {
+                    emailAliasLifecycleView(alias)
                 }
             }
             .padding(12)
@@ -294,7 +300,7 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
         } accessoryContent: {
             AccessoryButton(
                 asset: SharedAsset.Icons.generate24,
-                accessibilityLabel: Localizations.generatePassword,
+                accessibilityLabel: Localizations.generate,
                 accessibilityIdentifier: "RegenerateValueButton",
             ) {
                 store.send(.refreshGeneratedValue)

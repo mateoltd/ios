@@ -13,8 +13,8 @@ include:
     enable: ${LOCAL_SDK}
 packages:
   BitwardenSdk:
-    url: https://github.com/bitwarden/sdk-swift
-    revision: abd7c991f4ada589722950332d37d002f41d002b # 3.0.0-7705-485773c
+    url: https://github.com/mateoltd/sdk-swift
+    revision: 858d31ac18214e47c5264fc73da8c9885565bda0 # 0.2.0-alias-platform.3
   Firebase:
     url: https://github.com/firebase/firebase-ios-sdk
     exactVersion: 12.14.0

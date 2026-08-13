@@ -371,6 +371,7 @@ public extension Login {
         self.init(
             username: loginView.username,
             password: loginView.password,
+            aliasReference: loginView.aliasReference,
             passwordRevisionDate: loginView.passwordRevisionDate,
             uris: loginView.uris?.map(LoginUri.init),
             totp: loginView.totp,
@@ -385,6 +386,7 @@ public extension LoginView {
         self.init(
             username: login.username,
             password: login.password,
+            aliasReference: login.aliasReference,
             passwordRevisionDate: login.passwordRevisionDate,
             uris: login.uris?.map(LoginUriView.init),
             totp: login.totp,

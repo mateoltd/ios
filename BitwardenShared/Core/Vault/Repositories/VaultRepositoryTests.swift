@@ -1252,6 +1252,7 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     /// `hasMinimumCipherCount(_:)` returns `true` when vault has at least the specified count.
     func test_hasMinimumCipherCount_true() async throws {
         cipherService.cipherCountResult = .success(5)
+        cipherService.fetchAllCiphersResult = .success((0 ..< 5).map { Cipher.fixture(id: String($0)) })
         let hasMinimum = try await subject.hasMinimumCipherCount(5)
         XCTAssertTrue(hasMinimum)
     }
@@ -1259,8 +1260,19 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     /// `hasMinimumCipherCount(_:)` returns `true` when vault has more than the specified count.
     func test_hasMinimumCipherCount_moreThanMinimum() async throws {
         cipherService.cipherCountResult = .success(6)
+        cipherService.fetchAllCiphersResult = .success((0 ..< 6).map { Cipher.fixture(id: String($0)) })
         let hasMinimum = try await subject.hasMinimumCipherCount(5)
         XCTAssertTrue(hasMinimum)
+    }
+
+    /// `hasMinimumCipherCount(_:)` does not count the encrypted alias carrier as a vault item.
+    func test_hasMinimumCipherCount_excludesAliasCarrier() async throws {
+        cipherService.cipherCountResult = .success(5)
+        let visible = (0 ..< 4).map { Cipher.fixture(id: String($0)) }
+        cipherService.fetchAllCiphersResult = try .success(visible + [aliasConnectionCarrierCipher()])
+
+        let hasMinimum = try await subject.hasMinimumCipherCount(5)
+        XCTAssertFalse(hasMinimum)
     }
 
     /// `hasMinimumCipherCount(_:)` returns `false` when vault has fewer than the specified count.
@@ -1281,8 +1293,18 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     /// `isVaultEmpty()` returns `false` if the user's vault is not empty.
     func test_isVaultEmpty_false() async throws {
         cipherService.cipherCountResult = .success(2)
+        cipherService.fetchAllCiphersResult = .success([.fixture(id: "1"), .fixture(id: "2")])
         let isEmpty = try await subject.isVaultEmpty()
         XCTAssertFalse(isEmpty)
+    }
+
+    /// `isVaultEmpty()` excludes the encrypted alias carrier from the user-visible count.
+    func test_isVaultEmpty_aliasCarrierOnly() async throws {
+        cipherService.cipherCountResult = .success(1)
+        cipherService.fetchAllCiphersResult = try .success([aliasConnectionCarrierCipher()])
+
+        let isEmpty = try await subject.isVaultEmpty()
+        XCTAssertTrue(isEmpty)
     }
 
     /// `isVaultEmpty()` returns `true` if the user's vault is empty.
@@ -1959,6 +1981,25 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     }
 
     // MARK: Private
+
+    private func aliasConnectionCarrierCipher() throws -> Cipher {
+        let connection = AliasProviderConnection(
+            providerInstance: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+        )
+        var sync = AliasSyncDocument(replicaId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        _ = try sync.append(kind: "connection-upsert", connection: connection)
+        let view = try AliasConnectionVaultCodec.encode(AliasConnectionVaultPayload(
+            version: AliasConnectionSchema.version,
+            connection: connection,
+            credential: AliasConnectionCredential(
+                token: "encrypted-provider-token",
+                baseUrl: connection.providerInstance,
+            ),
+            sync: sync,
+        ))
+        return Cipher(cipherView: view)
+    }
 
     private func setupDefaultDecryptFido2AutofillCredentialsMocker(
         expectedCredentialId: Data,
