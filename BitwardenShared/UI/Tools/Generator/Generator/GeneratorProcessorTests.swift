@@ -88,10 +88,8 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         EmailAliasResult(
             address: "alias@example.com",
             reference: reference,
-            identity: EmailAliasIdentity(
+            identity: AliasIdentity(
                 version: 1,
-                provider: "simplelogin",
-                providerInstance: "https://app.simplelogin.io/",
                 connectionId: "11111111-1111-4111-8111-111111111111",
                 aliasId: "42",
                 address: "alias@example.com",
@@ -737,7 +735,7 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
 
         XCTAssertEqual(
             generatorRepository.usernameGeneratorRequest,
-            UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+            AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
         )
 
         XCTAssertEqual(subject.state.generatedValue, "USERNAME")
@@ -1046,7 +1044,7 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         waitFor { subject.state.generatedValue == "USERNAME" }
         XCTAssertEqual(
             generatorRepository.usernameGeneratorRequest,
-            UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+            AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
         )
         XCTAssertEqual(subject.state.generatedValue, "USERNAME")
     }

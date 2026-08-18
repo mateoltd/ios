@@ -558,10 +558,8 @@ class AddEditItemProcessorTests: BitwardenTestCase {
         )
         let reference = try serializeAliasReference(reference: AliasReference(
             version: 1,
-            provider: .simpleLogin,
-            providerInstance: "https://app.simplelogin.io/",
             connectionId: "11111111-1111-4111-8111-111111111111",
-            aliasId: 42,
+            aliasId: "42",
             address: "alias@example.com",
         ))
         subject.state.loginState.fido2Credentials = [credential]
@@ -593,10 +591,8 @@ class AddEditItemProcessorTests: BitwardenTestCase {
     func test_didCreateEmailAlias_mismatchedUsernameClearsBindingOnly() throws {
         let reference = try serializeAliasReference(reference: AliasReference(
             version: 1,
-            provider: .simpleLogin,
-            providerInstance: "https://app.simplelogin.io/",
             connectionId: "11111111-1111-4111-8111-111111111111",
-            aliasId: 42,
+            aliasId: "42",
             address: "alias@example.com",
         ))
         subject.state.loginState.password = "password"
@@ -614,10 +610,8 @@ class AddEditItemProcessorTests: BitwardenTestCase {
     func test_receive_usernameChanged_clearsStaleAliasBinding() throws {
         let reference = try serializeAliasReference(reference: AliasReference(
             version: 1,
-            provider: .simpleLogin,
-            providerInstance: "https://app.simplelogin.io/",
             connectionId: "11111111-1111-4111-8111-111111111111",
-            aliasId: 42,
+            aliasId: "42",
             address: "alias@example.com",
         ))
         subject.state.loginState.username = "alias@example.com"
