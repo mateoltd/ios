@@ -34,7 +34,7 @@ class MockGeneratorRepository: GeneratorRepository {
         minSpecial: nil,
     )
 
-    var usernameGeneratorRequest: UsernameGeneratorRequest?
+    var usernameGeneratorRequest: AppUsernameGeneratorRequest?
     var usernameResult: Result<String, Error> = .success("USERNAME")
 
     var cancelEmailAliasOperationsCalled = false
@@ -106,7 +106,7 @@ class MockGeneratorRepository: GeneratorRepository {
         return try passwordResult.get()
     }
 
-    func generateUsername(settings: UsernameGeneratorRequest) async throws -> String {
+    func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String {
         usernameGeneratorRequest = settings
         return try usernameResult.get()
     }

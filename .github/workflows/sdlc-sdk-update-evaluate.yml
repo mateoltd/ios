@@ -288,4 +288,3 @@ jobs:
           # header out of .git/config and the token out of the remote URL git echoes on error.
           git -c http.extraheader="AUTHORIZATION: basic $(printf '%s' "x-access-token:$_TOKEN" | base64 | tr -d '\n')" \
             push origin "HEAD:$_BRANCH_NAME"
-

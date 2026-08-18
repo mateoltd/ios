@@ -1987,20 +1987,17 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     // MARK: Private
 
     private func aliasConnectionCarrierCipher() throws -> Cipher {
-        let connection = AliasProviderConnection(
-            providerInstance: "https://app.simplelogin.io/",
+        let connection = SimpleLoginAliasAdapter.makeConnection(
             connectionId: "11111111-1111-4111-8111-111111111111",
         )
-        var sync = AliasSyncDocument(replicaId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-        _ = try sync.append(kind: "connection-upsert", connection: connection)
         let view = try AliasConnectionVaultCodec.encode(AliasConnectionVaultPayload(
             version: AliasConnectionSchema.version,
             connection: connection,
             credential: AliasConnectionCredential(
                 token: "encrypted-provider-token",
-                baseUrl: connection.providerInstance,
+                baseUrl: "https://app.simplelogin.io/",
             ),
-            sync: sync,
+            journal: AliasJournal(version: 1, connectionId: connection.connectionId, events: []),
         ))
         return Cipher(cipherView: view)
     }

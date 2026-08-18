@@ -52,7 +52,7 @@ protocol GeneratorRepository: AnyObject {
     /// - Parameter settings: The settings used to generate the username.
     /// - Returns: The generated username.
     ///
-    func generateUsername(settings: UsernameGeneratorRequest) async throws -> String
+    func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String
 
     /// Loads a SimpleLogin profile and cached alias only from the encrypted local vault.
     func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile?
@@ -145,6 +145,9 @@ class DefaultGeneratorRepository {
     /// The service that owns encrypted alias connection state and explicit provider operations.
     let emailAliasService: EmailAliasService
 
+    /// The isolated boundary for existing create-only forwarded-email services.
+    let forwardedEmailAliasGenerator: ForwardedEmailAliasGenerator
+
     /// The service used for evaluating policy.
     let policyService: PolicyService
 
@@ -167,6 +170,7 @@ class DefaultGeneratorRepository {
         dataStore: GeneratorDataStore,
         emailAliasService: EmailAliasService,
         errorReporter: ErrorReporter,
+        forwardedEmailAliasGenerator: ForwardedEmailAliasGenerator = ForwardedEmailAliasGenerator(),
         policyService: PolicyService,
         stateService: StateService,
     ) {
@@ -174,6 +178,7 @@ class DefaultGeneratorRepository {
         self.dataStore = dataStore
         self.emailAliasService = emailAliasService
         self.errorReporter = errorReporter
+        self.forwardedEmailAliasGenerator = forwardedEmailAliasGenerator
         self.policyService = policyService
         self.stateService = stateService
     }
@@ -255,8 +260,12 @@ extension DefaultGeneratorRepository: GeneratorRepository {
         try await clientService.generators().password(settings: settings)
     }
 
-    func generateUsername(settings: UsernameGeneratorRequest) async throws -> String {
-        try await clientService.generators().username(settings: settings)
+    func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String {
+        if case let .forwarded(service, website) = settings {
+            return try await forwardedEmailAliasGenerator.generate(service: service, website: website)
+        }
+        guard let sdkRequest = settings.sdkRequest else { throw EmailAliasError.invalidConfiguration }
+        return try await clientService.generators().username(settings: sdkRequest)
     }
 
     func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile? {

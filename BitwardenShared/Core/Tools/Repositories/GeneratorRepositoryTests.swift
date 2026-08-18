@@ -269,7 +269,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
         clientService.mockGenerators.usernameReturnValue = "USERNAME"
 
         let username = try await subject.generateUsername(
-            settings: UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+            settings: AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
         )
 
         XCTAssertEqual(username, "USERNAME")
@@ -283,7 +283,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
 
         await assertAsyncThrows(error: GenerateUsernameError()) {
             _ = try await subject.generateUsername(
-                settings: UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+                settings: AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
             )
         }
     }

@@ -929,6 +929,7 @@ public class ServiceContainer: Services { // swiftlint:disable:this type_body_le
         )
 
         let emailAliasService = DefaultEmailAliasService(
+            adapter: .simpleLogin,
             cipherService: cipherService,
             clientService: clientService,
             stateService: stateService,

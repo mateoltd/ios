@@ -190,10 +190,10 @@ extension GeneratorState.UsernameState {
         )
     }
 
-    /// Returns a `UsernameGeneratorRequest` containing the user selected settings for generating a
+    /// Returns an `AppUsernameGeneratorRequest` containing the user selected settings for generating a
     /// username.
     ///
-    func usernameGeneratorRequest() throws -> UsernameGeneratorRequest? {
+    func usernameGeneratorRequest() throws -> AppUsernameGeneratorRequest? {
         guard canGenerateUsername else { return nil }
 
         return switch usernameGeneratorType {
@@ -204,15 +204,15 @@ extension GeneratorState.UsernameState {
         case .plusAddressedEmail:
             try plusAddressedEmailGeneratorRequest()
         case .randomWord:
-            UsernameGeneratorRequest.word(capitalize: capitalize, includeNumber: includeNumber)
+            AppUsernameGeneratorRequest.word(capitalize: capitalize, includeNumber: includeNumber)
         }
     }
 
     // MARK: Private
 
-    /// Returns a `UsernameGeneratorRequest` used to generate a catch-all username.
+    /// Returns an `AppUsernameGeneratorRequest` used to generate a catch-all username.
     ///
-    private func catchAllGeneratorRequest() throws -> UsernameGeneratorRequest {
+    private func catchAllGeneratorRequest() throws -> AppUsernameGeneratorRequest {
         let type: AppendType
         switch catchAllEmailType {
         case .random:
@@ -221,32 +221,32 @@ extension GeneratorState.UsernameState {
             guard let emailWebsite else { throw UsernameGeneratorError.missingWebsite }
             type = AppendType.websiteName(website: emailWebsite)
         }
-        return UsernameGeneratorRequest.catchall(type: type, domain: domain)
+        return AppUsernameGeneratorRequest.catchall(type: type, domain: domain)
     }
 
-    /// Returns a `UsernameGeneratorRequest` used to generate a forwarded email alias username.
+    /// Returns an `AppUsernameGeneratorRequest` used to generate a forwarded email alias username.
     ///
-    private func forwardedEmailGeneratorRequest() -> UsernameGeneratorRequest {
+    private func forwardedEmailGeneratorRequest() -> AppUsernameGeneratorRequest {
         let service = switch forwardedEmailService {
         case .addyIO:
-            ForwarderServiceType.addyIo(
+            ForwardedEmailGeneratorService.addyIo(
                 apiToken: addyIOAPIAccessToken,
                 domain: addyIODomainName,
                 baseUrl: addyIOSelfHostServerUrl.nilIfEmpty ?? ForwardedEmailServiceType.defaultAddyIOBaseUrl,
             )
         case .duckDuckGo:
-            ForwarderServiceType.duckDuckGo(token: duckDuckGoAPIKey)
+            ForwardedEmailGeneratorService.duckDuckGo(token: duckDuckGoAPIKey)
         case .fastmail:
-            ForwarderServiceType.fastmail(apiToken: fastmailAPIKey)
+            ForwardedEmailGeneratorService.fastmail(apiToken: fastmailAPIKey)
         case .firefoxRelay:
-            ForwarderServiceType.firefox(apiToken: firefoxRelayAPIAccessToken)
+            ForwardedEmailGeneratorService.firefox(apiToken: firefoxRelayAPIAccessToken)
         case .forwardEmail:
-            ForwarderServiceType.forwardEmail(
+            ForwardedEmailGeneratorService.forwardEmail(
                 apiToken: forwardEmailAPIToken,
                 domain: forwardEmailDomainName,
             )
         case .simpleLogin:
-            ForwarderServiceType.simpleLogin(
+            ForwardedEmailGeneratorService.simpleLogin(
                 apiKey: simpleLoginAPIKey,
                 baseUrl: simpleLoginSelfHostServerUrl.nilIfEmpty
                     ?? ForwardedEmailServiceType.defaultSimpleLoginBaseUrl,
@@ -255,12 +255,12 @@ extension GeneratorState.UsernameState {
 
         // Fastmail does not allow emailWebsite to be nil.
         let website = (forwardedEmailService == .fastmail) ? (emailWebsite ?? "") : emailWebsite
-        return UsernameGeneratorRequest.forwarded(service: service, website: website)
+        return AppUsernameGeneratorRequest.forwarded(service: service, website: website)
     }
 
-    /// Returns a `UsernameGeneratorRequest` used to generate a plus-addressed email username.
+    /// Returns an `AppUsernameGeneratorRequest` used to generate a plus-addressed email username.
     ///
-    private func plusAddressedEmailGeneratorRequest() throws -> UsernameGeneratorRequest {
+    private func plusAddressedEmailGeneratorRequest() throws -> AppUsernameGeneratorRequest {
         let type: AppendType
         switch plusAddressedEmailType {
         case .random:
@@ -269,6 +269,6 @@ extension GeneratorState.UsernameState {
             guard let emailWebsite else { throw UsernameGeneratorError.missingWebsite }
             type = AppendType.websiteName(website: emailWebsite)
         }
-        return UsernameGeneratorRequest.subaddress(type: type, email: email)
+        return AppUsernameGeneratorRequest.subaddress(type: type, email: email)
     }
 }

@@ -1,7 +1,8 @@
 import BitwardenSdk
 import Foundation
 
-// The actor owns the complete lifecycle so cancellation and decrypted-state clearing stay serialized.
+// The actor owns connection state and operation lifetime. The SDK owns the canonical contract,
+// pure journal reduction, reference codec, and reconciliation algorithms.
 // swiftlint:disable file_length
 
 struct EmailAliasProfile: Equatable, Sendable {
@@ -31,120 +32,132 @@ protocol EmailAliasService: AnyObject {
     func cancelAndClear() async
 }
 
-actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this type_body_length
-    typealias ClientFactory = @Sendable (AliasClientSettings) throws -> any AliasClientProtocol
+/// Composition-root registration for a provider implementation. The service depends only on this
+/// neutral descriptor and never branches on provider names or native payloads.
+struct AliasAdapterRegistration: Sendable {
+    let adapterId: String
+    let defaultBaseUrl: String
+    let makeConnection: @Sendable (_ connectionId: String) -> AliasConnection
+    let makeClient: @Sendable (
+        _ connection: AliasConnection,
+        _ credential: AliasConnectionCredential,
+    ) throws -> any AliasClientProtocol
+}
 
+actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this type_body_length
     private struct Context: Sendable {
         let userId: String
         let generation: UInt64
     }
 
     private struct ConnectionState: Sendable {
-        let connection: AliasProviderConnection
+        let connection: AliasConnection
         let credential: AliasConnectionCredential
-        var sync: AliasSyncDocument
+        var journal: AliasJournal
     }
 
-    private struct JournalIndex {
-        var deleted = Set<EmailAliasIdentity>()
-        var dispatchedOperationIds = Set<String>()
-        var operations = [String: AliasProviderOperation]()
-        var snapshots = [AliasProviderSnapshot]()
-        var terminalOperationIds = Set<String>()
-        var unknownOperationIds = Set<String>()
+    private struct FailureRecord: Sendable {
+        let error: AliasError
+        let lifecycle: AliasLifecycleState?
+        let operation: AliasOperationKind
+        let operationId: String
+        let target: AliasIdentity?
+
+        init(
+            error: AliasError,
+            operationId: String,
+            operation: AliasOperationKind,
+            target: AliasIdentity?,
+            lifecycle: AliasLifecycleState? = nil,
+        ) {
+            self.error = error
+            self.lifecycle = lifecycle
+            self.operation = operation
+            self.operationId = operationId
+            self.target = target
+        }
     }
 
+    private let adapter: AliasAdapterRegistration
     private let cipherService: CipherService
-    private let clientFactory: ClientFactory
     private let clientService: ClientService
     private let replicaId = UUID().uuidString.lowercased()
     private let stateService: StateService
     private let syncService: SyncService
     private let vaultTimeoutService: VaultTimeoutService
 
-    private var activeOperation: Task<EmailAliasResult?, Error>?
+    private var cancelActiveOperation: (@Sendable () -> Void)?
     private var decryptedPayloads = [AliasConnectionVaultPayload]()
     private var generation: UInt64 = 0
 
     init(
+        adapter: AliasAdapterRegistration,
         cipherService: CipherService,
         clientService: ClientService,
         stateService: StateService,
         syncService: SyncService,
         vaultTimeoutService: VaultTimeoutService,
-        clientFactory: @escaping ClientFactory = { try AliasClient(settings: $0) },
     ) {
+        self.adapter = adapter
         self.cipherService = cipherService
         self.clientService = clientService
         self.stateService = stateService
         self.syncService = syncService
         self.vaultTimeoutService = vaultTimeoutService
-        self.clientFactory = clientFactory
     }
 
     func loadProfile(baseUrl: String) async throws -> EmailAliasProfile? {
         let context = try await context()
         defer { clearDecryptedState() }
-        let canonicalBaseUrl = try canonicalBaseUrl(baseUrl)
-        guard let state = try await loadConnection(baseUrl: canonicalBaseUrl, context: context) else {
-            return nil
-        }
-        let cachedAlias = try cachedAlias(in: state.sync, connection: state.connection, excluding: [])
-        return EmailAliasProfile(
+        let endpoint = try canonicalBaseUrl(baseUrl)
+        guard let state = try await loadConnection(baseUrl: endpoint, context: context) else { return nil }
+        let used = try await boundAliases(context: context)
+        return try EmailAliasProfile(
             token: state.credential.token,
             baseUrl: state.credential.baseUrl,
             connectionId: state.connection.connectionId,
-            cachedAlias: cachedAlias,
+            cachedAlias: cachedAlias(in: state.journal, excluding: used),
         )
     }
 
     func createAlias(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult {
-        guard let result = try await runOperation({
+        try await runOperation {
             try await self.performCreate(token: token, baseUrl: baseUrl, hostname: hostname)
-        }) else { throw EmailAliasError.invalidEncryptedState }
-        return result
+        }
     }
 
     func setAliasEnabled(_ alias: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult {
-        guard let result = try await runOperation({
-            try await self.performSetEnabled(alias, enabled: enabled)
-        }) else { throw EmailAliasError.invalidEncryptedState }
-        return result
+        try await runOperation { try await self.performSetEnabled(alias, enabled: enabled) }
     }
 
     func deleteAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
-        guard let result = try await runOperation({
-            try await self.performDelete(alias)
-        }) else { throw EmailAliasError.invalidEncryptedState }
-        return result
+        try await runOperation { try await self.performDelete(alias) }
     }
 
     func reconcile(baseUrl: String) async throws -> EmailAliasResult? {
-        try await runOperation {
-            try await self.performReconciliation(baseUrl: baseUrl)
-        }
+        try await runOperation { try await self.performReconciliation(baseUrl: baseUrl) }
     }
 
     func cancelAndClear() {
         generation &+= 1
-        activeOperation?.cancel()
-        activeOperation = nil
+        cancelActiveOperation?()
+        cancelActiveOperation = nil
         clearDecryptedState()
     }
 
     // MARK: - Explicit operations
 
-    private func runOperation(
-        _ operation: @escaping @Sendable () async throws -> EmailAliasResult?,
-    ) async throws -> EmailAliasResult? {
-        activeOperation?.cancel()
+    private func runOperation<Result: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Result,
+    ) async throws -> Result {
+        cancelActiveOperation?()
         generation &+= 1
         let operationGeneration = generation
-        let task = Task { try await operation() }
-        activeOperation = task
+        let task = Task<Result, Error> { try await operation() }
+        cancelActiveOperation = { task.cancel() }
         defer {
             if generation == operationGeneration {
-                activeOperation = nil
+                cancelActiveOperation = nil
                 clearDecryptedState()
             }
         }
@@ -154,134 +167,112 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     // swiftlint:disable:next function_body_length
     private func performCreate(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult {
         let context = try await context()
-        let canonicalBaseUrl = try canonicalBaseUrl(baseUrl)
-        let credential = AliasConnectionCredential(token: token, baseUrl: canonicalBaseUrl)
-        var connection = try await loadConnection(baseUrl: canonicalBaseUrl, context: context)
-        if let connection, connection.credential != credential {
-            throw EmailAliasError.conflict
-        }
-        if connection == nil {
-            connection = try await createConnection(credential: credential, context: context)
-        }
-        guard var connection else { throw EmailAliasError.invalidEncryptedState }
+        let endpoint = try canonicalBaseUrl(baseUrl)
+        let credential = AliasConnectionCredential(token: token, baseUrl: endpoint)
+        var loaded = try await loadConnection(baseUrl: endpoint, context: context)
+        if let loaded, loaded.credential != credential { throw EmailAliasError.conflict }
+        if loaded == nil { loaded = try await createConnection(credential: credential, context: context) }
+        guard var state = loaded else { throw EmailAliasError.invalidEncryptedState }
+        try rejectUncertainCreate(in: state.journal)
 
-        let operation = AliasProviderOperation(
-            operation: "create",
-            connection: connection.connection,
-            request: AliasCreateIntent(kind: "random", hostname: hostname, mode: nil, note: nil),
-            alias: nil,
-        )
-        let operationEvent: AliasSyncEvent
+        let originalJournal = state.journal
+        let operationId = UUID().uuidString.lowercased()
         do {
-            operationEvent = try await appendAndPersist(
-                kind: "provider-operation",
-                value: operation,
-                state: &connection,
+            try await appendAndPersist(
+                operationId: operationId,
+                operation: .create,
+                phase: .prepared,
+                state: &state,
                 context: context,
             )
-            _ = try await appendAndPersist(
-                kind: "provider-dispatched",
-                operationId: operationEvent.id,
-                state: &connection,
+            try await appendAndPersist(
+                operationId: operationId,
+                operation: .create,
+                phase: .dispatched,
+                state: &state,
                 context: context,
             )
         } catch {
-            // A provider call is never made unless its encrypted dispatch marker was persisted.
-            // Offline use is limited to an already observed, unbound alias and never queues creation.
+            // No callback occurs unless the encrypted dispatch fact is durable. A failed journal
+            // write may reuse only a previously observed and currently unbound resource.
+            state.journal = originalJournal
             let used = await (try? boundAliases(context: context)) ?? []
-            if let cached = try cachedAlias(in: connection.sync, connection: connection.connection, excluding: used) {
-                return cached
-            }
+            if let cached = try cachedAlias(in: state.journal, excluding: used) { return cached }
             throw error
         }
-        try await validate(context)
 
-        let client = try makeClient(connection)
+        let client = try makeClient(state)
         do {
-            let alias = try await client.createRandomAlias(request: CreateRandomAliasRequest(
-                hostname: hostname,
-                mode: nil,
-                note: nil,
-            ))
+            let alias = try await client.create(request: CreateAliasRequest(hostname: normalizedHostname(hostname)))
             try await validate(context)
-            let reference = try client.createAliasReference(alias: alias)
-            var result = EmailAliasResult(
-                address: alias.email,
-                reference: reference,
-                identity: EmailAliasIdentity(alias: alias, connection: connection.connection),
-                status: alias.enabled ? .enabled : .disabled,
-            )
+            var result = try result(alias)
             do {
-                _ = try await appendAndPersist(
-                    kind: "provider-ack",
-                    operationId: operationEvent.id,
-                    snapshot: AliasProviderSnapshot(alias: alias, connection: connection.connection),
-                    state: &connection,
+                try await appendAndPersist(
+                    operationId: operationId,
+                    operation: .create,
+                    phase: .acknowledged,
+                    target: alias.identity,
+                    lifecycle: alias.lifecycle,
+                    state: &state,
                     context: context,
                 )
             } catch {
-                // The provider result remains valid even when its encrypted journal acknowledgement
-                // cannot be saved. The login can still be saved with the canonical SDK reference.
+                // The provider result is still usable; the login retains the canonical reference
+                // and later reconciliation can recover the missing acknowledgement.
                 result.journalPersistenceFailed = true
             }
             return result
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as AliasError {
+            try await validate(context)
             return try await handleCreateFailure(
                 error,
-                operationId: operationEvent.id,
-                state: &connection,
+                operationId: operationId,
+                state: &state,
                 context: context,
             )
+        } catch {
+            try await validate(context)
+            try? await recordFailure(FailureRecord(
+                error: .LocalSecurityFailure,
+                operationId: operationId,
+                operation: .create,
+                target: nil,
+            ),
+            state: &state,
+            context: context)
+            throw EmailAliasError.providerRejected
         }
     }
 
-    // swiftlint:disable:next function_body_length
-    private func performSetEnabled(
-        _ result: EmailAliasResult,
-        enabled: Bool,
-    ) async throws -> EmailAliasResult {
+    private func performSetEnabled(_ result: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult {
         let context = try await context()
-        var connection = try await requiredConnection(for: result.identity, context: context)
-        let operationName = enabled ? "enable" : "disable"
-        let operation = AliasProviderOperation(
-            operation: operationName,
-            connection: nil,
-            request: nil,
-            alias: result.identity,
-        )
-        let operationEvent = try await appendAndPersist(
-            kind: "provider-operation",
-            value: operation,
-            state: &connection,
+        var state = try await requiredConnection(for: result.identity, context: context)
+        let operation: AliasOperationKind = enabled ? .enable : .disable
+        let lifecycle: AliasLifecycleState = enabled ? .enabled : .disabled
+        let operationId = UUID().uuidString.lowercased()
+        try await prepareAndDispatch(
+            operationId: operationId,
+            operation: operation,
+            target: result.identity,
+            lifecycle: lifecycle,
+            state: &state,
             context: context,
         )
-        _ = try await appendAndPersist(
-            kind: "provider-dispatched",
-            operationId: operationEvent.id,
-            state: &connection,
-            context: context,
-        )
-        let client = try makeClient(connection)
+        let client = try makeClient(state)
         do {
-            let providerState = try await client.setAliasEnabled(
-                aliasId: aliasId(result.identity),
-                enabled: enabled,
-            )
+            let alias = try await client.setEnabled(identity: result.identity, enabled: enabled)
             try await validate(context)
-            var updated = result
-            updated.status = providerState.enabled ? .enabled : .disabled
-            let snapshot = AliasProviderSnapshot(
-                alias: result.identity,
-                enabled: providerState.enabled,
-            )
+            var updated = try self.result(alias)
             do {
-                _ = try await appendAndPersist(
-                    kind: "provider-ack",
-                    operationId: operationEvent.id,
-                    snapshot: snapshot,
-                    state: &connection,
+                try await appendAndPersist(
+                    operationId: operationId,
+                    operation: operation,
+                    phase: .acknowledged,
+                    target: alias.identity,
+                    lifecycle: alias.lifecycle,
+                    state: &state,
                     context: context,
                 )
             } catch {
@@ -291,44 +282,49 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as AliasError {
-            try await recordMutationFailure(error, operationId: operationEvent.id, state: &connection, context: context)
+            try await validate(context)
+            try? await recordFailure(FailureRecord(
+                error: error,
+                operationId: operationId,
+                operation: operation,
+                target: result.identity,
+                lifecycle: lifecycle,
+            ),
+            state: &state,
+            context: context)
             throw map(error)
         }
     }
 
     private func performDelete(_ result: EmailAliasResult) async throws -> EmailAliasResult {
         let context = try await context()
-        var connection = try await requiredConnection(for: result.identity, context: context)
-        let operation = AliasProviderOperation(
-            operation: "delete",
-            connection: nil,
-            request: nil,
-            alias: result.identity,
-        )
-        let operationEvent = try await appendAndPersist(
-            kind: "provider-operation",
-            value: operation,
-            state: &connection,
+        var state = try await requiredConnection(for: result.identity, context: context)
+        let operationId = UUID().uuidString.lowercased()
+        try await prepareAndDispatch(
+            operationId: operationId,
+            operation: .delete,
+            target: result.identity,
+            lifecycle: .deleted,
+            state: &state,
             context: context,
         )
-        _ = try await appendAndPersist(
-            kind: "provider-dispatched",
-            operationId: operationEvent.id,
-            state: &connection,
-            context: context,
-        )
-        let client = try makeClient(connection)
+        let client = try makeClient(state)
         do {
-            let deletion = try await client.deleteAlias(aliasId: aliasId(result.identity))
+            let deletion = try await client.delete(identity: result.identity)
             try await validate(context)
-            guard deletion.deleted else { throw EmailAliasError.providerRejected }
+            guard deletion.deleted, deletion.identity == result.identity else {
+                throw AliasError.InvalidResponse
+            }
             var deleted = result
             deleted.status = .deleted
             do {
-                _ = try await appendAndPersist(
-                    kind: "provider-ack",
-                    operationId: operationEvent.id,
-                    state: &connection,
+                try await appendAndPersist(
+                    operationId: operationId,
+                    operation: .delete,
+                    phase: .acknowledged,
+                    target: result.identity,
+                    lifecycle: .deleted,
+                    state: &state,
                     context: context,
                 )
             } catch {
@@ -338,96 +334,163 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as AliasError {
-            try await recordMutationFailure(error, operationId: operationEvent.id, state: &connection, context: context)
+            try await validate(context)
+            try? await recordFailure(FailureRecord(
+                error: error,
+                operationId: operationId,
+                operation: .delete,
+                target: result.identity,
+                lifecycle: .deleted,
+            ),
+            state: &state,
+            context: context)
             throw map(error)
         }
     }
 
+    // swiftlint:disable:next function_body_length
     private func performReconciliation(baseUrl: String) async throws -> EmailAliasResult? {
         let context = try await context()
         try await syncService.fetchSync(forceSync: true, isPeriodic: false)
         try await validate(context)
-        let canonicalBaseUrl = try canonicalBaseUrl(baseUrl)
-        guard var connection = try await loadConnection(baseUrl: canonicalBaseUrl, context: context) else {
-            return nil
-        }
-        let client = try makeClient(connection)
-        var aliases = [BitwardenSdk.Alias]()
-        for pageNumber in 0 ..< 100 {
-            let page = try await client.listAliases(page: UInt32(pageNumber), filter: nil)
-            try await validate(context)
-            if page.aliases.isEmpty { break }
-            aliases.append(contentsOf: page.aliases)
-        }
+        let endpoint = try canonicalBaseUrl(baseUrl)
+        guard var state = try await loadConnection(baseUrl: endpoint, context: context) else { return nil }
 
-        for alias in aliases {
-            _ = try await appendAndPersist(
-                kind: "provider-observe",
-                snapshot: AliasProviderSnapshot(alias: alias, connection: connection.connection),
-                state: &connection,
+        let operationId = UUID().uuidString.lowercased()
+        try await prepareAndDispatch(
+            operationId: operationId,
+            operation: .reconcile,
+            state: &state,
+            context: context,
+        )
+        let client = try makeClient(state)
+        do {
+            var aliases = [BitwardenSdk.Alias]()
+            var pageToken: String?
+            var observedTokens = Set<String>()
+            for _ in 0 ..< 100 {
+                let page = try await client.list(request: ListAliasesRequest(pageToken: pageToken))
+                try await validate(context)
+                aliases.append(contentsOf: page.aliases)
+                guard let next = page.nextPageToken else { break }
+                guard observedTokens.insert(next).inserted else { throw AliasError.InvalidResponse }
+                pageToken = next
+            }
+            if pageToken != nil, observedTokens.count == 100 { throw AliasError.InvalidResponse }
+            guard Set(aliases.map(\.identity)).count == aliases.count else { throw AliasError.InvalidResponse }
+
+            for alias in aliases {
+                try await appendAndPersist(
+                    operationId: UUID().uuidString.lowercased(),
+                    operation: .get,
+                    phase: .acknowledged,
+                    target: alias.identity,
+                    lifecycle: alias.lifecycle,
+                    state: &state,
+                    context: context,
+                )
+            }
+            try await reconcileLoginBindings(aliases: aliases, state: state, context: context)
+            try await appendAndPersist(
+                operationId: operationId,
+                operation: .reconcile,
+                phase: .acknowledged,
+                state: &state,
                 context: context,
             )
+            let used = try await boundAliases(context: context)
+            return try cachedAlias(in: state.journal, excluding: used)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as AliasError {
+            try await validate(context)
+            try? await recordFailure(FailureRecord(
+                error: error,
+                operationId: operationId,
+                operation: .reconcile,
+                target: nil,
+            ),
+            state: &state,
+            context: context)
+            throw map(error)
         }
-        try await reconcileLoginBindings(aliases: aliases, connection: connection, context: context)
-        return try cachedAlias(in: connection.sync, connection: connection.connection, excluding: [])
     }
 
-    // MARK: - Carrier persistence
+    // MARK: - Canonical journal persistence
 
     private func createConnection(
         credential: AliasConnectionCredential,
         context: Context,
     ) async throws -> ConnectionState {
-        let providerInstance = try canonicalBaseUrl(credential.baseUrl)
-        let connection = AliasProviderConnection(
-            providerInstance: providerInstance,
-            connectionId: UUID().uuidString.lowercased(),
-        )
-        var sync = AliasSyncDocument(replicaId: replicaId)
-        let event = try sync.append(kind: "connection-upsert", connection: connection)
-        let state = ConnectionState(connection: connection, credential: credential, sync: sync)
-        try await persist(event: event, state: state, credential: credential, context: context)
+        let connection = adapter.makeConnection(UUID().uuidString.lowercased())
+        let journal = try AliasJournal.empty(connectionId: connection.connectionId)
+        let state = ConnectionState(connection: connection, credential: credential, journal: journal)
+        try await persist(state: state, credential: credential, expectedEventId: nil, context: context)
         return state
     }
 
-    private func appendAndPersist(
-        kind: String,
-        value: AliasProviderOperation? = nil,
-        operationId: String? = nil,
-        snapshot: AliasProviderSnapshot? = nil,
-        reason: String? = nil,
+    private func prepareAndDispatch(
+        operationId: String,
+        operation: AliasOperationKind,
+        target: AliasIdentity? = nil,
+        lifecycle: AliasLifecycleState? = nil,
         state: inout ConnectionState,
         context: Context,
-    ) async throws -> AliasSyncEvent {
-        let event = try state.sync.append(
-            kind: kind,
-            value: value,
+    ) async throws {
+        try await appendAndPersist(
             operationId: operationId,
-            snapshot: snapshot,
-            reason: reason,
+            operation: operation,
+            phase: .prepared,
+            target: target,
+            lifecycle: lifecycle,
+            state: &state,
+            context: context,
         )
-        try await persist(event: event, state: state, credential: nil, context: context)
-        return event
+        try await appendAndPersist(
+            operationId: operationId,
+            operation: operation,
+            phase: .dispatched,
+            target: target,
+            lifecycle: lifecycle,
+            state: &state,
+            context: context,
+        )
+    }
+
+    private func appendAndPersist(
+        operationId: String,
+        operation: AliasOperationKind,
+        phase: AliasOperationPhase,
+        target: AliasIdentity? = nil,
+        lifecycle: AliasLifecycleState? = nil,
+        error: AliasErrorCode? = nil,
+        state: inout ConnectionState,
+        context: Context,
+    ) async throws {
+        let event = try state.journal.append(
+            replicaId: replicaId,
+            operationId: operationId,
+            operation: operation,
+            phase: phase,
+            target: target,
+            lifecycle: lifecycle,
+            error: error,
+        )
+        try await persist(state: state, credential: nil, expectedEventId: event.eventId, context: context)
     }
 
     private func persist(
-        event: AliasSyncEvent,
         state: ConnectionState,
         credential: AliasConnectionCredential?,
+        expectedEventId: String?,
         context: Context,
     ) async throws {
         try await validate(context)
-        let segment = AliasSyncDocument(
-            version: AliasConnectionSchema.version,
-            replicaId: state.sync.replicaId,
-            clock: state.sync.clock,
-            events: [event],
-        )
         let payload = AliasConnectionVaultPayload(
             version: AliasConnectionSchema.version,
             connection: state.connection,
             credential: credential,
-            sync: segment,
+            journal: state.journal,
         )
         let view = try AliasConnectionVaultCodec.encode(payload)
         let encrypted = try await clientService.vault().ciphers().encrypt(cipherView: view)
@@ -436,10 +499,12 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             try await cipherService.addCipherWithServer(encrypted.cipher, encryptedFor: encrypted.encryptedFor)
         } catch {
             try? await syncService.fetchSync(forceSync: true, isPeriodic: false)
-            let records = try? await loadPayloads(context: context)
-            if records?.contains(where: { payload in
-                payload.sync.events.contains(where: { record in record.id == event.id })
-            }) == true {
+            if let expectedEventId,
+               let payloads = try? await loadPayloads(context: context),
+               payloads.contains(where: { payload in
+                   payload.connection.connectionId == state.connection.connectionId
+                       && payload.journal.events.contains(where: { $0.eventId == expectedEventId })
+               }) {
                 return
             }
             throw EmailAliasError.conflict
@@ -448,48 +513,53 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     }
 
     private func loadConnection(baseUrl: String, context: Context) async throws -> ConnectionState? {
-        let payloads = try await loadPayloads(context: context).filter { payload in
-            payload.connection.providerInstance == baseUrl
-        }
-        guard !payloads.isEmpty else { return nil }
-        let connectionIds = Set(payloads.map(\.connection.connectionId))
-        guard connectionIds.count == 1, let connection = payloads.first?.connection else {
+        let payloads = try await loadPayloads(context: context)
+            .filter { $0.connection.adapter.adapterId == adapter.adapterId }
+        let roots = payloads.filter { $0.credential?.baseUrl == baseUrl }
+        guard !roots.isEmpty else { return nil }
+        let connectionIds = Set(roots.map(\.connection.connectionId))
+        guard connectionIds.count == 1, let connectionId = connectionIds.first else {
             throw EmailAliasError.conflict
         }
+        return try assembleConnection(
+            payloads.filter { $0.connection.connectionId == connectionId },
+            context: context,
+        )
+    }
+
+    private func requiredConnection(for identity: AliasIdentity, context: Context) async throws -> ConnectionState {
+        guard identity.version == UInt32(AliasConnectionSchema.version),
+              AliasSyncValidation.canonicalUUID(identity.connectionId) == identity.connectionId
+        else { throw EmailAliasError.invalidEncryptedState }
+        let matching = try await loadPayloads(context: context)
+            .filter { $0.connection.connectionId == identity.connectionId }
+        guard !matching.isEmpty else { throw EmailAliasError.conflict }
+        return try assembleConnection(matching, context: context)
+    }
+
+    private func assembleConnection(
+        _ payloads: [AliasConnectionVaultPayload],
+        context: Context,
+    ) throws -> ConnectionState {
+        guard let connection = payloads.first?.connection,
+              payloads.allSatisfy({ $0.connection == connection })
+        else { throw EmailAliasError.conflict }
         let credentials = Set(payloads.compactMap(\.credential))
         guard credentials.count == 1, let credential = credentials.first else {
             throw EmailAliasError.conflict
         }
-        let merged = try AliasSyncDocument.merged(payloads.map(\.sync), replicaId: replicaId)
-        if merged.events.contains(where: { event in
-            event.kind == "connection-remove" && event.connection == connection
-        }) {
-            return nil
-        }
-        return ConnectionState(connection: connection, credential: credential, sync: merged)
-    }
-
-    private func requiredConnection(
-        for identity: EmailAliasIdentity,
-        context: Context,
-    ) async throws -> ConnectionState {
-        guard let connection = try await loadConnection(baseUrl: identity.providerInstance, context: context),
-              connection.connection.connectionId == identity.connectionId
-        else { throw EmailAliasError.conflict }
-        return connection
+        let journal = try AliasJournal.merged(payloads.map(\.journal), connectionId: connection.connectionId)
+        return ConnectionState(connection: connection, credential: credential, journal: journal)
     }
 
     private func loadPayloads(context: Context) async throws -> [AliasConnectionVaultPayload] {
         try await validate(context)
         let ciphers = try await cipherService.fetchAllCiphers()
         var payloads = [AliasConnectionVaultPayload]()
-        for cipher in ciphers {
+        for cipher in ciphers where cipher.type == .secureNote {
             try await validate(context)
-            guard cipher.type == .secureNote else { continue }
             let view = try await clientService.vault().ciphers().decrypt(cipher: cipher)
-            if view.isAliasConnectionCarrier {
-                try payloads.append(AliasConnectionVaultCodec.decode(view))
-            }
+            if view.isAliasConnectionCarrier { try payloads.append(AliasConnectionVaultCodec.decode(view)) }
         }
         decryptedPayloads = payloads
         return payloads
@@ -499,15 +569,18 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
 
     private func reconcileLoginBindings(
         aliases: [BitwardenSdk.Alias],
-        connection: ConnectionState,
+        state: ConnectionState,
         context: Context,
     ) async throws {
         let encryptedCiphers = try await cipherService.fetchAllCiphers().filter { $0.type == .login }
         let ciphers = try await encryptedCiphers.asyncMap { cipher in
             try await clientService.vault().ciphers().decrypt(cipher: cipher)
         }
-        let provider = try makeClient(connection).providerIdentity()
-        let plan = try planAliasReconciliation(provider: provider, aliases: aliases, ciphers: ciphers)
+        let plan = try planAliasReconciliation(
+            connectionId: state.connection.connectionId,
+            aliases: aliases,
+            ciphers: ciphers,
+        )
         guard !plan.actions.isEmpty else { return }
         let output = try applyAliasReconciliation(plan: plan, aliases: aliases, ciphers: ciphers)
         let changedIds = Set(output.result.changedCipherIds)
@@ -522,75 +595,58 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     }
 
     private func cachedAlias(
-        in document: AliasSyncDocument,
-        connection: AliasProviderConnection,
-        excluding usedAliases: Set<EmailAliasIdentity>,
+        in journal: AliasJournal,
+        excluding usedAliases: Set<AliasIdentity>,
     ) throws -> EmailAliasResult? {
-        var index = journalIndex(document)
-        index.unknownOperationIds.formUnion(
-            index.dispatchedOperationIds.subtracting(index.terminalOperationIds),
-        )
-        let hasUnknownCreate = index.unknownOperationIds.contains(where: { operationId in
-            index.operations[operationId]?.operation == "create"
-        })
-        guard let snapshot = index.snapshots.reversed().first(where: { snapshot in
-            snapshot.enabled
-                && !index.deleted.contains(snapshot.alias)
-                && !usedAliases.contains(snapshot.alias)
-        }), let reference = snapshot.alias.sdkReference else {
+        let reduced: AliasJournalState
+        do { reduced = try reduceAliasJournal(journal: journal) } catch { throw EmailAliasError.invalidEncryptedState }
+        guard reduced.conflicts.isEmpty else { throw EmailAliasError.conflict }
+        let hasUnknownCreate = reduced.operations.contains { operation in
+            operation.operation == .create
+                && (operation.phase == .dispatched || operation.phase == .outcomeUnknown)
+        }
+        guard let resource = reduced.resources.first(where: { resource in
+            !resource.tombstoned
+                && resource.lifecycle == .enabled
+                && !usedAliases.contains(resource.identity)
+        }) else {
             if hasUnknownCreate { throw EmailAliasError.operationOutcomeUnknown }
             return nil
         }
-        return try EmailAliasResult(
-            address: snapshot.alias.address,
-            reference: serializeAliasReference(reference: reference),
-            identity: snapshot.alias,
-            status: hasUnknownCreate ? .unknown : .enabled,
-        )
+        var result = try result(resource.identity, lifecycle: resource.lifecycle)
+        if hasUnknownCreate { result.status = .unknown }
+        return result
     }
 
-    private func journalIndex(_ document: AliasSyncDocument) -> JournalIndex {
-        var index = JournalIndex()
-        for event in document.events {
-            switch event.kind {
-            case "provider-operation":
-                if let value = event.value {
-                    index.operations[event.id] = value
-                }
-            case "provider-dispatched":
-                if let operationId = event.operationId {
-                    index.dispatchedOperationIds.insert(operationId)
-                }
-            case "provider-ack":
-                if let operationId = event.operationId {
-                    index.terminalOperationIds.insert(operationId)
-                    if index.operations[operationId]?.operation == "delete",
-                       let identity = index.operations[operationId]?.alias {
-                        index.deleted.insert(identity)
-                    }
-                }
-                if let snapshot = event.snapshot {
-                    index.snapshots.append(snapshot)
-                }
-            case "provider-observe":
-                if let snapshot = event.snapshot {
-                    index.snapshots.append(snapshot)
-                }
-            case "provider-unknown":
-                if let operationId = event.operationId {
-                    index.terminalOperationIds.insert(operationId)
-                    index.unknownOperationIds.insert(operationId)
-                }
-            case "provider-failed":
-                if let operationId = event.operationId {
-                    index.terminalOperationIds.insert(operationId)
-                }
-            default:
-                break
-            }
-        }
-        return index
+    private func rejectUncertainCreate(in journal: AliasJournal) throws {
+        let reduced = try reduceAliasJournal(journal: journal)
+        guard reduced.conflicts.isEmpty else { throw EmailAliasError.conflict }
+        guard !reduced.operations.contains(where: { operation in
+            operation.operation == .create
+                && (operation.phase == .dispatched || operation.phase == .outcomeUnknown)
+        }) else { throw EmailAliasError.operationOutcomeUnknown }
     }
+
+    private func boundAliases(context: Context) async throws -> Set<AliasIdentity> {
+        let encrypted = try await cipherService.fetchAllCiphers().filter { $0.type == .login }
+        var identities = Set<AliasIdentity>()
+        for cipher in encrypted {
+            try await validate(context)
+            let view = try await clientService.vault().ciphers().decrypt(cipher: cipher)
+            guard let value = view.login?.aliasReference,
+                  let reference = try? parseAliasReference(value: value)
+            else { continue }
+            identities.insert(AliasIdentity(
+                version: reference.version,
+                connectionId: reference.connectionId,
+                aliasId: reference.aliasId,
+                address: reference.address,
+            ))
+        }
+        return identities
+    }
+
+    // MARK: - Failure recording
 
     private func handleCreateFailure(
         _ error: AliasError,
@@ -598,82 +654,40 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         state: inout ConnectionState,
         context: Context,
     ) async throws -> EmailAliasResult {
-        let isUnknown = switch error {
-        case .MutationCommittedButRefreshFailed,
-             .MutationOutcomeUnknown,
-             .MutationResponseInvalid,
-             .Transport:
-            true
-        default:
-            false
-        }
-        if isUnknown {
-            try? await appendAndPersist(
-                kind: "provider-unknown",
-                operationId: operationId,
-                state: &state,
-                context: context,
-            )
+        try? await recordFailure(FailureRecord(
+            error: error,
+            operationId: operationId,
+            operation: .create,
+            target: nil,
+        ),
+        state: &state,
+        context: context)
+        if error == .OutcomeUnknown {
             let used = try await boundAliases(context: context)
-            if var cached = try cachedAlias(in: state.sync, connection: state.connection, excluding: used) {
+            if var cached = try cachedAlias(in: state.journal, excluding: used) {
                 cached.status = .unknown
                 return cached
             }
-            throw EmailAliasError.operationOutcomeUnknown
         }
-        try? await appendAndPersist(
-            kind: "provider-failed",
-            operationId: operationId,
-            reason: failureReason(error),
-            state: &state,
-            context: context,
-        )
         throw map(error)
     }
 
-    private func recordMutationFailure(
-        _ error: AliasError,
-        operationId: String,
+    private func recordFailure(
+        _ record: FailureRecord,
         state: inout ConnectionState,
         context: Context,
     ) async throws {
-        let isUnknown = switch error {
-        case .MutationCommittedButRefreshFailed,
-             .MutationOutcomeUnknown,
-             .MutationResponseInvalid,
-             .Transport:
-            true
-        default:
-            false
-        }
-        _ = try? await appendAndPersist(
-            kind: isUnknown ? "provider-unknown" : "provider-failed",
-            operationId: operationId,
-            reason: isUnknown ? nil : failureReason(error),
+        let outcomeUnknown = record.error == .OutcomeUnknown
+        try await appendAndPersist(
+            operationId: record.operationId,
+            operation: record.operation,
+            phase: outcomeUnknown ? .outcomeUnknown : .failed,
+            target: record.target,
+            lifecycle: record.lifecycle,
+            error: outcomeUnknown ? .outcomeUnknown : errorCode(record.error),
             state: &state,
             context: context,
         )
-    }
-
-    private func boundAliases(context: Context) async throws -> Set<EmailAliasIdentity> {
-        let encrypted = try await cipherService.fetchAllCiphers().filter { $0.type == .login }
-        var identities = Set<EmailAliasIdentity>()
-        for cipher in encrypted {
-            try await validate(context)
-            let view = try await clientService.vault().ciphers().decrypt(cipher: cipher)
-            guard let value = view.login?.aliasReference,
-                  let reference = try? parseAliasReference(value: value)
-            else { continue }
-            identities.insert(EmailAliasIdentity(
-                version: Int(reference.version),
-                provider: "simplelogin",
-                providerInstance: reference.providerInstance,
-                connectionId: reference.connectionId,
-                aliasId: String(reference.aliasId),
-                address: reference.address,
-            ))
-        }
-        return identities
     }
 
     // MARK: - Safety helpers
@@ -697,75 +711,78 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
 
     private func canonicalBaseUrl(_ value: String) throws -> String {
         let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? ForwardedEmailServiceType.defaultSimpleLoginBaseUrl
+            ? adapter.defaultBaseUrl
             : value
-        guard let canonical = AliasSyncValidation.canonicalProviderInstance(candidate) else {
+        guard let canonical = AliasSyncValidation.canonicalEndpoint(candidate) else {
             throw EmailAliasError.invalidConfiguration
         }
         return canonical
     }
 
-    private func makeClient(_ state: ConnectionState) throws -> any AliasClientProtocol {
-        try clientFactory(AliasClientSettings(
-            baseUrl: state.credential.baseUrl,
-            apiToken: state.credential.token,
-            connectionId: state.connection.connectionId,
-        ))
+    private func normalizedHostname(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? nil : normalized
     }
 
-    private func aliasId(_ identity: EmailAliasIdentity) throws -> UInt64 {
-        guard let id = UInt64(identity.aliasId) else { throw EmailAliasError.invalidEncryptedState }
-        return id
+    private func makeClient(_ state: ConnectionState) throws -> any AliasClientProtocol {
+        try adapter.makeClient(state.connection, state.credential)
+    }
+
+    private func result(_ alias: BitwardenSdk.Alias) throws -> EmailAliasResult {
+        try result(alias.identity, lifecycle: alias.lifecycle)
+    }
+
+    private func result(_ identity: AliasIdentity, lifecycle: AliasLifecycleState) throws -> EmailAliasResult {
+        try EmailAliasResult(
+            address: identity.address,
+            reference: createAliasReference(identity: identity),
+            identity: identity,
+            status: status(lifecycle),
+        )
+    }
+
+    private func status(_ lifecycle: AliasLifecycleState) -> EmailAliasLifecycleStatus {
+        switch lifecycle {
+        case .enabled: .enabled
+        case .disabled: .disabled
+        case .deleted: .deleted
+        }
     }
 
     private func map(_ error: AliasError) -> EmailAliasError {
         switch error {
-        case .MutationCommittedButRefreshFailed,
-             .MutationOutcomeUnknown,
-             .MutationResponseInvalid,
-             .Transport:
-            .operationOutcomeUnknown
-        case .InvalidAuthenticationToken,
-             .InvalidBaseUrl,
-             .InvalidConnectionIdentity,
-             .InvalidRequest:
-            .invalidConfiguration
-        default:
-            .providerRejected
+        case .VaultLocked: .locked
+        case .OutcomeUnknown: .operationOutcomeUnknown
+        case .SyncConflict: .conflict
+        case .InvalidInput: .invalidConfiguration
+        case .ConnectionMissing, .InvalidResponse, .LocalSecurityFailure: .invalidEncryptedState
+        default: .providerRejected
         }
     }
 
-    private func failureReason(_ error: AliasError) -> String {
+    private func errorCode(_ error: AliasError) -> AliasErrorCode {
         switch error {
-        case .AuthenticationFailed: "invalid-credentials"
-        case .RateLimited: "rate-limited"
-        case .Provider: "forbidden"
-        default: "invalid-response"
+        case .VaultLocked: .vaultLocked
+        case .ConnectionMissing: .connectionMissing
+        case .AuthenticationRejected: .authenticationRejected
+        case .PermissionDenied: .permissionDenied
+        case .CapabilityUnsupported: .capabilityUnsupported
+        case .InvalidInput: .invalidInput
+        case .NotFound: .notFound
+        case .QuotaExhausted: .quotaExhausted
+        case .RateLimited: .rateLimited
+        case .Offline: .offline
+        case .Timeout: .timeout
+        case .ServiceUnavailable: .serviceUnavailable
+        case .InvalidResponse: .invalidResponse
+        case .OutcomeUnknown: .outcomeUnknown
+        case .SyncConflict: .syncConflict
+        case .LocalSecurityFailure: .localSecurityFailure
         }
     }
 
     private func clearDecryptedState() {
         decryptedPayloads.removeAll(keepingCapacity: false)
-    }
-}
-
-private extension AliasProviderSnapshot {
-    init(alias: EmailAliasIdentity, enabled: Bool) {
-        self.alias = alias
-        self.enabled = enabled
-        name = nil
-        note = nil
-        mailboxIds = nil
-        pgpDisabled = nil
-        pinned = nil
-    }
-}
-
-private extension AliasSyncDocument {
-    init(version: Int, replicaId: String, clock: [String: Int], events: [AliasSyncEvent]) {
-        self.version = version
-        self.replicaId = replicaId
-        self.clock = clock
-        self.events = events
     }
 }
