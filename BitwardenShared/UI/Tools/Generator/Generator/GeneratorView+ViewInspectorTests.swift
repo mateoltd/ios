@@ -2,6 +2,7 @@
 import BitwardenKit
 import BitwardenKitMocks
 import BitwardenResources
+import BitwardenSdk
 import SwiftUI
 import ViewInspector
 import ViewInspectorTestHelpers
@@ -77,7 +78,9 @@ class GeneratorViewTests: BitwardenTestCase {
     /// Tapping on the refresh button dispatches the `.refreshGeneratedValue` action.
     @MainActor
     func test_generatedValue_refreshTap() throws {
-        let button = try subject.inspect().find(buttonWithAccessibilityLabel: Localizations.generatePassword)
+        let button = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "RegenerateValueButton")
+            .button()
         try button.tap()
         XCTAssertEqual(processor.dispatchedActions.last, .refreshGeneratedValue)
     }
@@ -283,10 +286,8 @@ class GeneratorViewTests: BitwardenTestCase {
         processor.state.generatorType = .username
         processor.state.usernameState.usernameGeneratorType = .forwardedEmail
         processor.state.usernameState.forwardedEmailService = .simpleLogin
-        let identity = EmailAliasIdentity(
-            version: AliasConnectionSchema.version,
-            provider: "simplelogin",
-            providerInstance: "https://app.simplelogin.io/",
+        let identity = AliasIdentity(
+            version: UInt32(AliasConnectionSchema.version),
             connectionId: "11111111-1111-4111-8111-111111111111",
             aliasId: "42",
             address: "alias@example.test",

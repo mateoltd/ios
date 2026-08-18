@@ -5,7 +5,6 @@ import XCTest
 @testable import BitwardenShared
 @testable import BitwardenSharedMocks
 
-// swiftlint:disable file_length
 final class EmailAliasServiceTests: BitwardenTestCase {
     private let connectionId = "11111111-1111-4111-8111-111111111111"
     private var cipherService: MockCipherService!
@@ -26,12 +25,17 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         syncService = MockSyncService()
         vaultTimeoutService = MockVaultTimeoutService()
         subject = DefaultEmailAliasService(
+            adapter: AliasAdapterRegistration(
+                adapterId: SimpleLoginAliasAdapter.adapterId,
+                defaultBaseUrl: ForwardedEmailServiceType.defaultSimpleLoginBaseUrl,
+                makeConnection: SimpleLoginAliasAdapter.makeConnection,
+                makeClient: { [fakeClient] _, _ in fakeClient! },
+            ),
             cipherService: cipherService,
             clientService: clientService,
             stateService: stateService,
             syncService: syncService,
             vaultTimeoutService: vaultTimeoutService,
-            clientFactory: { [fakeClient] _ in fakeClient! },
         )
     }
 
@@ -53,31 +57,30 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(fakeClient.providerCallCount, 0)
     }
 
-    /// One explicit create call persists dispatch before contacting the provider exactly once.
+    /// One explicit create persists prepared and dispatched facts before exactly one callback.
     func test_createAlias_explicitActionPersistsDispatchAndCallsProviderOnce() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload())
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
 
         let result = try await subject.createAlias(
             token: "encrypted-provider-token",
             baseUrl: "https://app.simplelogin.io/",
-            hostname: "example.com",
+            hostname: "EXAMPLE.com",
         )
 
-        XCTAssertEqual(fakeClient.createRandomAliasCallCount, 1)
-        XCTAssertEqual(fakeClient.providerCallCount, 2)
+        XCTAssertEqual(fakeClient.createCallCount, 1)
+        XCTAssertEqual(fakeClient.lastCreateRequest?.hostname, "example.com")
+        XCTAssertEqual(fakeClient.providerCallCount, 1)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 3)
         XCTAssertEqual(result.address, "alias@example.com")
         XCTAssertEqual(result.status, .enabled)
         let reference = try parseAliasReference(value: result.reference)
         XCTAssertEqual(reference.connectionId, connectionId)
-        XCTAssertEqual(reference.aliasId, 42)
+        XCTAssertEqual(reference.aliasId, "42")
     }
 
-    /// If encrypted dispatch cannot be persisted, an observed unbound alias is reused without a provider call.
+    /// If encrypted dispatch cannot be persisted, an observed unbound alias is reused without a callback.
     func test_createAlias_offlineBeforeDispatchNeverContactsProvider() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload(observedAlias: true))
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
         cipherService.addCipherWithServerResult = .failure(OfflineError())
 
         let result = try await subject.createAlias(
@@ -91,21 +94,25 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(result.status, .enabled)
     }
 
-    /// A persisted dispatch without a terminal event remains unknown after a process restart.
+    /// A persisted dispatch without a terminal fact remains unknown after a process restart.
     func test_loadProfile_dispatchedCreateWithoutTerminalEventIsUnknown() async throws {
         var payload = try carrierPayload(observedAlias: true)
-        let operation = try payload.sync.append(
-            kind: "provider-operation",
-            value: AliasProviderOperation(
-                operation: "create",
-                connection: payload.connection,
-                request: AliasCreateIntent(kind: "random", hostname: nil, mode: nil, note: nil),
-                alias: nil,
-            ),
+        let operationId = "33333333-3333-4333-8333-333333333333"
+        _ = try payload.journal.append(
+            replicaId: "22222222-2222-4222-8222-222222222222",
+            operationId: operationId,
+            operation: .create,
+            phase: .prepared,
         )
-        _ = try payload.sync.append(kind: "provider-dispatched", operationId: operation.id)
-        let carrier = try AliasConnectionVaultCodec.encode(payload)
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        _ = try payload.journal.append(
+            replicaId: "22222222-2222-4222-8222-222222222222",
+            operationId: operationId,
+            operation: .create,
+            phase: .dispatched,
+        )
+        cipherService.fetchAllCiphersResult = try .success([
+            Cipher(cipherView: AliasConnectionVaultCodec.encode(payload)),
+        ])
 
         let profile = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
 
@@ -113,13 +120,12 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(fakeClient.providerCallCount, 0)
     }
 
-    /// A provider callback arriving after extension/process expiry cannot publish decrypted state.
+    /// A callback arriving after extension/process expiry cannot publish decrypted state.
     func test_createAlias_lateCallbackAfterCancellationIsDiscarded() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload())
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
         let providerStarted = expectation(description: "provider started")
         let gate = AliasCallGate()
-        fakeClient.createRandomAliasHandler = { [fakeClient] in
+        fakeClient.createHandler = { [fakeClient] in
             providerStarted.fulfill()
             await gate.wait()
             return fakeClient!.aliasFixture()
@@ -145,13 +151,12 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 2)
     }
 
-    /// Locking the vault while the provider is in flight rejects the callback before acknowledgement.
+    /// Locking the vault while a callback is in flight rejects the callback before acknowledgement.
     func test_createAlias_lockRejectsLateCallback() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload())
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
         let providerStarted = expectation(description: "provider started")
         let gate = AliasCallGate()
-        fakeClient.createRandomAliasHandler = { [fakeClient] in
+        fakeClient.createHandler = { [fakeClient] in
             providerStarted.fulfill()
             await gate.wait()
             return fakeClient!.aliasFixture()
@@ -165,9 +170,7 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         }
         await fulfillment(of: [providerStarted], timeout: 1)
 
-        await MainActor.run {
-            vaultTimeoutService.isClientLocked["account-1"] = true
-        }
+        await MainActor.run { vaultTimeoutService.isClientLocked["account-1"] = true }
         await gate.resume()
 
         do {
@@ -179,13 +182,12 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 2)
     }
 
-    /// Switching accounts while the provider is in flight rejects the old account's callback.
+    /// Switching accounts while a callback is in flight rejects the old account's result.
     func test_createAlias_accountSwitchRejectsLateCallback() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload())
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
         let providerStarted = expectation(description: "provider started")
         let gate = AliasCallGate()
-        fakeClient.createRandomAliasHandler = { [fakeClient] in
+        fakeClient.createHandler = { [fakeClient] in
             providerStarted.fulfill()
             await gate.wait()
             return fakeClient!.aliasFixture()
@@ -211,75 +213,68 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 2)
     }
 
-    /// Disabling an alias persists operation, dispatch, and acknowledgement around one provider call.
+    /// Disabling persists prepared, dispatched, and acknowledged lifecycle facts.
     func test_setAliasEnabled_explicitActionPersistsLifecycle() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload(observedAlias: true))
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
 
         let result = try await subject.setAliasEnabled(aliasResult(), enabled: false)
 
         XCTAssertEqual(result.status, .disabled)
-        XCTAssertEqual(fakeClient.setAliasEnabledCallCount, 1)
+        XCTAssertEqual(fakeClient.setEnabledCallCount, 1)
         XCTAssertEqual(fakeClient.providerCallCount, 1)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 3)
     }
 
-    /// Deleting an alias records a terminal tombstone without clearing the caller's valid login state.
+    /// Deletion records a terminal tombstone without clearing the caller's valid login state.
     func test_deleteAlias_explicitActionPersistsTombstone() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload(observedAlias: true))
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
 
         let result = try await subject.deleteAlias(aliasResult())
 
         XCTAssertEqual(result.status, .deleted)
-        XCTAssertEqual(fakeClient.deleteAliasCallCount, 1)
+        XCTAssertEqual(fakeClient.deleteCallCount, 1)
         XCTAssertEqual(fakeClient.providerCallCount, 1)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 3)
     }
 
-    /// Reconciliation is explicit, syncs first, observes provider state, and returns the cached alias.
+    /// Explicit reconciliation syncs first, consumes opaque pages, observes resources, and converges.
     func test_reconcile_explicitActionObservesProviderState() async throws {
-        let carrier = try AliasConnectionVaultCodec.encode(carrierPayload())
-        cipherService.fetchAllCiphersResult = .success([Cipher(cipherView: carrier)])
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
 
         let result = try await subject.reconcile(baseUrl: "https://app.simplelogin.io/")
 
         XCTAssertEqual(result?.address, "alias@example.com")
-        XCTAssertEqual(fakeClient.listAliasesCallCount, 2)
-        XCTAssertEqual(fakeClient.providerIdentityCallCount, 1)
-        XCTAssertEqual(fakeClient.providerCallCount, 3)
-        XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 1)
+        XCTAssertEqual(fakeClient.listCallCount, 2)
+        XCTAssertEqual(fakeClient.providerCallCount, 2)
+        XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 4)
     }
 
     private func aliasResult() throws -> EmailAliasResult {
-        let connection = AliasProviderConnection(
-            providerInstance: "https://app.simplelogin.io/",
-            connectionId: connectionId,
-        )
-        let alias = fakeClient.aliasFixture()
-        let identity = EmailAliasIdentity(alias: alias, connection: connection)
-        guard let reference = identity.sdkReference else {
-            throw EmailAliasError.invalidEncryptedState
-        }
+        let identity = fakeClient.aliasFixture().identity
         return try EmailAliasResult(
             address: identity.address,
-            reference: serializeAliasReference(reference: reference),
+            reference: createAliasReference(identity: identity),
             identity: identity,
             status: .enabled,
         )
     }
 
+    private func carrier(observedAlias: Bool = false) throws -> CipherView {
+        try AliasConnectionVaultCodec.encode(carrierPayload(observedAlias: observedAlias))
+    }
+
     private func carrierPayload(observedAlias: Bool = false) throws -> AliasConnectionVaultPayload {
-        let connection = AliasProviderConnection(
-            providerInstance: "https://app.simplelogin.io/",
-            connectionId: connectionId,
-        )
-        var sync = AliasSyncDocument(replicaId: "22222222-2222-4222-8222-222222222222")
-        _ = try sync.append(kind: "connection-upsert", connection: connection)
+        let connection = SimpleLoginAliasAdapter.makeConnection(connectionId: connectionId)
+        var journal = try AliasJournal.empty(connectionId: connectionId)
         if observedAlias {
-            _ = try sync.append(
-                kind: "provider-observe",
-                snapshot: AliasProviderSnapshot(alias: fakeClient.aliasFixture(), connection: connection),
+            let alias = fakeClient.aliasFixture()
+            _ = try journal.append(
+                replicaId: "22222222-2222-4222-8222-222222222222",
+                operationId: "44444444-4444-4444-8444-444444444444",
+                operation: .get,
+                phase: .acknowledged,
+                target: alias.identity,
+                lifecycle: alias.lifecycle,
             )
         }
         return AliasConnectionVaultPayload(
@@ -289,7 +284,7 @@ final class EmailAliasServiceTests: BitwardenTestCase {
                 token: "encrypted-provider-token",
                 baseUrl: "https://app.simplelogin.io/",
             ),
-            sync: sync,
+            journal: journal,
         )
     }
 }
@@ -297,94 +292,72 @@ final class EmailAliasServiceTests: BitwardenTestCase {
 private struct OfflineError: Error, Equatable {}
 
 private final class FakeAliasClient: AliasClient, @unchecked Sendable {
-    let connectionId: String
-    var createRandomAliasCallCount = 0
-    var createRandomAliasHandler: (@Sendable () async throws -> BitwardenSdk.Alias)?
-    var deleteAliasCallCount = 0
-    var listAliasesCallCount = 0
+    let testConnection: AliasConnection
+    var createCallCount = 0
+    var createHandler: (@Sendable () async throws -> BitwardenSdk.Alias)?
+    var deleteCallCount = 0
+    var lastCreateRequest: CreateAliasRequest?
+    var listCallCount = 0
     var providerCallCount = 0
-    var providerIdentityCallCount = 0
-    var setAliasEnabledCallCount = 0
+    var setEnabledCallCount = 0
 
     init(connectionId: String) {
-        self.connectionId = connectionId
+        testConnection = SimpleLoginAliasAdapter.makeConnection(connectionId: connectionId)
         super.init(noHandle: NoHandle())
     }
 
     required init(unsafeFromHandle handle: UInt64) {
-        connectionId = "11111111-1111-4111-8111-111111111111"
+        testConnection = SimpleLoginAliasAdapter.makeConnection(
+            connectionId: "11111111-1111-4111-8111-111111111111",
+        )
         super.init(unsafeFromHandle: handle)
     }
 
-    override func createRandomAlias(request _: CreateRandomAliasRequest) async throws -> BitwardenSdk.Alias {
-        createRandomAliasCallCount += 1
+    override func connection() -> AliasConnection { testConnection }
+
+    override func create(request: CreateAliasRequest) async throws -> BitwardenSdk.Alias {
+        createCallCount += 1
         providerCallCount += 1
-        if let createRandomAliasHandler {
-            return try await createRandomAliasHandler()
-        }
+        lastCreateRequest = request
+        if let createHandler { return try await createHandler() }
         return aliasFixture()
     }
 
-    func aliasFixture() -> BitwardenSdk.Alias {
-        let mailbox = MailboxRef(id: 7, email: "mailbox@example.com")
-        return BitwardenSdk.Alias(
-            id: 42,
-            email: "alias@example.com",
-            creationDate: "2026-08-13T00:00:00Z",
-            creationTimestamp: 1_786_579_200,
-            enabled: true,
-            note: nil,
-            name: nil,
-            nbForward: 0,
-            nbBlock: 0,
-            nbReply: 0,
-            mailbox: mailbox,
-            mailboxes: [mailbox],
-            supportPgp: false,
-            disablePgp: false,
-            latestActivity: nil,
-            pinned: false,
+    override func delete(identity: AliasIdentity) async throws -> DeleteAliasResult {
+        deleteCallCount += 1
+        providerCallCount += 1
+        return DeleteAliasResult(identity: identity, deleted: true)
+    }
+
+    override func list(request: ListAliasesRequest) async throws -> AliasPage {
+        listCallCount += 1
+        providerCallCount += 1
+        if request.pageToken == nil {
+            return AliasPage(aliases: [aliasFixture()], nextPageToken: "page-1")
+        }
+        return AliasPage(aliases: [], nextPageToken: nil)
+    }
+
+    override func setEnabled(identity _: AliasIdentity, enabled: Bool) async throws -> BitwardenSdk.Alias {
+        setEnabledCallCount += 1
+        providerCallCount += 1
+        return aliasFixture(lifecycle: enabled ? .enabled : .disabled)
+    }
+
+    func aliasFixture(lifecycle: AliasLifecycleState = .enabled) -> BitwardenSdk.Alias {
+        BitwardenSdk.Alias(
+            identity: AliasIdentity(
+                version: 1,
+                connectionId: testConnection.connectionId,
+                aliasId: "42",
+                address: "alias@example.com",
+            ),
+            lifecycle: lifecycle,
+            freshness: .current,
+            consistency: .clean,
+            label: nil,
+            capabilities: SimpleLoginAliasAdapter.capabilities,
         )
-    }
-
-    override func createAliasReference(alias: BitwardenSdk.Alias) throws -> SensitiveString {
-        providerCallCount += 1
-        return try serializeAliasReference(reference: AliasReference(
-            version: 1,
-            provider: .simpleLogin,
-            providerInstance: "https://app.simplelogin.io/",
-            connectionId: connectionId,
-            aliasId: alias.id,
-            address: alias.email,
-        ))
-    }
-
-    override func deleteAlias(aliasId: AliasId) async throws -> DeleteAliasResult {
-        deleteAliasCallCount += 1
-        providerCallCount += 1
-        return DeleteAliasResult(id: aliasId, deleted: true)
-    }
-
-    override func listAliases(page: UInt32, filter _: AliasFilter?) async throws -> AliasPage {
-        listAliasesCallCount += 1
-        providerCallCount += 1
-        return AliasPage(page: page, aliases: page == 0 ? [aliasFixture()] : [])
-    }
-
-    override func providerIdentity() throws -> AliasProviderIdentity {
-        providerIdentityCallCount += 1
-        providerCallCount += 1
-        return AliasProviderIdentity(
-            provider: .simpleLogin,
-            instance: "https://app.simplelogin.io/",
-            connectionId: connectionId,
-        )
-    }
-
-    override func setAliasEnabled(aliasId: AliasId, enabled: Bool) async throws -> AliasState {
-        setAliasEnabledCallCount += 1
-        providerCallCount += 1
-        return AliasState(id: aliasId, enabled: enabled)
     }
 }
 
