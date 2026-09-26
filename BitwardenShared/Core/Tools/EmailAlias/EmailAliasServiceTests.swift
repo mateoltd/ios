@@ -78,6 +78,28 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(reference.aliasId, "42")
     }
 
+    /// Carrier writes preserve the SDK's key identity so the server can reject stale-key writes.
+    func test_createAlias_preservesEncryptionKeyId() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
+        clientService.mockVault.clientCiphers.encryptClosure = { view in
+            EncryptionContext(
+                encryptedFor: "account-1",
+                encryptedByKeyId: "key-1",
+                cipher: Cipher(cipherView: view),
+            )
+        }
+
+        _ = try await subject.createAlias(
+            token: "encrypted-provider-token",
+            baseUrl: "https://app.simplelogin.io/",
+            hostname: "example.com",
+        )
+
+        XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 3)
+        XCTAssertEqual(cipherService.addCipherWithServerEncryptedByKeyId, "key-1")
+        XCTAssertEqual(cipherService.addCipherWithServerEncryptedFor, "account-1")
+    }
+
     /// If encrypted dispatch cannot be persisted, an observed unbound alias is reused without a callback.
     func test_createAlias_offlineBeforeDispatchNeverContactsProvider() async throws {
         cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
@@ -92,6 +114,62 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(fakeClient.providerCallCount, 0)
         XCTAssertEqual(result.address, "alias@example.com")
         XCTAssertEqual(result.status, .enabled)
+    }
+
+    /// An unreadable login cannot be treated as proof that a cached alias is unbound.
+    func test_createAlias_offlineCacheReuseRequiresReadableBindings() async throws {
+        cipherService.fetchAllCiphersResult = try .success([
+            Cipher(cipherView: carrier(observedAlias: true)),
+            .fixture(type: .login),
+        ])
+        cipherService.addCipherWithServerResult = .failure(OfflineError())
+        clientService.mockVault.clientCiphers.decryptClosure = { cipher in
+            guard cipher.type != .login else { throw OfflineError() }
+            return CipherView(cipher: cipher)
+        }
+
+        do {
+            _ = try await subject.createAlias(
+                token: "encrypted-provider-token",
+                baseUrl: "https://app.simplelogin.io/",
+                hostname: "example.com",
+            )
+            XCTFail("An unreadable login allowed cached alias reuse")
+        } catch {
+            XCTAssertTrue(error is OfflineError)
+        }
+        XCTAssertEqual(fakeClient.providerCallCount, 0)
+    }
+
+    /// Cancelling the caller also cancels the actor's provider task.
+    func test_createAlias_callerCancellationDiscardsLateCallback() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
+        let providerStarted = expectation(description: "provider started")
+        let gate = AliasCallGate()
+        fakeClient.createHandler = { [fakeClient] in
+            providerStarted.fulfill()
+            await gate.wait()
+            return fakeClient!.aliasFixture()
+        }
+        let operation = Task {
+            try await self.subject.createAlias(
+                token: "encrypted-provider-token",
+                baseUrl: "https://app.simplelogin.io/",
+                hostname: "example.com",
+            )
+        }
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        operation.cancel()
+        await gate.resume()
+
+        do {
+            _ = try await operation.value
+            XCTFail("The cancelled caller received a provider result")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 2)
     }
 
     /// A persisted dispatch without a terminal fact remains unknown after a process restart.

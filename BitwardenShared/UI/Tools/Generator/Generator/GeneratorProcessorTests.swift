@@ -772,6 +772,77 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         XCTAssertEqual(generatorRepository.emailAliasBaseUrl, "https://app.simplelogin.io/")
     }
 
+    /// A local profile read cannot restore a token after the generator has disappeared.
+    @MainActor
+    func test_perform_appeared_discardsProfileAfterDisappearance() async throws {
+        generatorRepository.getUsernameGenerationOptionsResult = .success(UsernameGenerationOptions(
+            serviceType: .simpleLogin,
+            simpleLoginBaseUrl: "https://app.simplelogin.io/",
+            type: .forwardedEmail,
+        ))
+        let profileStarted = expectation(description: "profile started")
+        let gate = GeneratorAliasCallGate()
+        let profile = EmailAliasProfile(
+            token: "encrypted-token",
+            baseUrl: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            cachedAlias: aliasResult(),
+        )
+        generatorRepository.loadEmailAliasProfileHandler = { _ in
+            profileStarted.fulfill()
+            await gate.wait()
+            return profile
+        }
+        setUpSubject(state: GeneratorState(generatorType: .username))
+        let operation = Task { await self.subject.perform(.appeared) }
+        await fulfillment(of: [profileStarted], timeout: 1)
+
+        subject.receive(.viewDisappeared)
+        await gate.resume()
+        await operation.value
+
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.generatedValue, "")
+    }
+
+    /// Provider changes cancel in-flight creation even though they never trigger another creation.
+    @MainActor
+    func test_receive_providerChangeCancelsInFlightAlias() async throws {
+        let providerStarted = expectation(description: "provider started")
+        let providerCancelled = expectation(description: "provider cancelled")
+        let providerReturned = expectation(description: "provider returned")
+        let gate = GeneratorAliasCallGate()
+        let result = aliasResult()
+        generatorRepository.createEmailAliasHandler = { _, _, _ in
+            await withTaskCancellationHandler {
+                providerStarted.fulfill()
+                await gate.wait()
+            } onCancel: {
+                providerCancelled.fulfill()
+            }
+            providerReturned.fulfill()
+            return result
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        subject.receive(.refreshGeneratedValue)
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        subject.receive(.usernameForwardedEmailServiceChanged(.duckDuckGo))
+        await fulfillment(of: [providerCancelled], timeout: 1)
+        await gate.resume()
+        await fulfillment(of: [providerReturned], timeout: 1)
+
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 1)
+        XCTAssertEqual(subject.state.usernameState.forwardedEmailService, .duckDuckGo)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.generatedValue, "")
+    }
+
     /// Focusing or editing SimpleLogin fields never creates an alias; creation requires refresh.
     @MainActor
     func test_receive_simpleLoginFieldChangesDoNotContactProvider() {
@@ -1494,5 +1565,21 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         XCTAssertGreaterThanOrEqual(Int(request.length), 20)
         // Special must be enabled and its minimum raised to the rules floor.
         XCTAssertTrue(subject.state.passwordState.containsSpecial)
+    }
+}
+
+private actor GeneratorAliasCallGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var resumed = false
+
+    func wait() async {
+        if resumed { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resume() {
+        resumed = true
+        continuation?.resume()
+        continuation = nil
     }
 }

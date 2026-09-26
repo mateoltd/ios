@@ -112,6 +112,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         let endpoint = try canonicalBaseUrl(baseUrl)
         guard let state = try await loadConnection(baseUrl: endpoint, context: context) else { return nil }
         let used = try await boundAliases(context: context)
+        try await validate(context)
         return try EmailAliasProfile(
             token: state.credential.token,
             baseUrl: state.credential.baseUrl,
@@ -150,6 +151,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     private func runOperation<Result: Sendable>(
         _ operation: @escaping @Sendable () async throws -> Result,
     ) async throws -> Result {
+        try Task.checkCancellation()
         cancelActiveOperation?()
         generation &+= 1
         let operationGeneration = generation
@@ -161,7 +163,11 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                 clearDecryptedState()
             }
         }
-        return try await task.value
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     // swiftlint:disable:next function_body_length
@@ -196,7 +202,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             // No callback occurs unless the encrypted dispatch fact is durable. A failed journal
             // write may reuse only a previously observed and currently unbound resource.
             state.journal = originalJournal
-            let used = await (try? boundAliases(context: context)) ?? []
+            let used = try await boundAliases(context: context)
             if let cached = try cachedAlias(in: state.journal, excluding: used) { return cached }
             throw error
         }
@@ -219,6 +225,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             } catch {
                 // The provider result is still usable; the login retains the canonical reference
                 // and later reconciliation can recover the missing acknowledgement.
+                try await validate(context)
                 result.journalPersistenceFailed = true
             }
             return result
@@ -276,6 +283,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                     context: context,
                 )
             } catch {
+                try await validate(context)
                 updated.journalPersistenceFailed = true
             }
             return updated
@@ -328,6 +336,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                     context: context,
                 )
             } catch {
+                try await validate(context)
                 deleted.journalPersistenceFailed = true
             }
             return deleted
@@ -496,7 +505,11 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         let encrypted = try await clientService.vault().ciphers().encrypt(cipherView: view)
         try await validate(context)
         do {
-            try await cipherService.addCipherWithServer(encrypted.cipher, encryptedFor: encrypted.encryptedFor)
+            try await cipherService.addCipherWithServer(
+                encrypted.cipher,
+                encryptedByKeyId: encrypted.encryptedByKeyId,
+                encryptedFor: encrypted.encryptedFor,
+            )
         } catch {
             try? await syncService.fetchSync(forceSync: true, isPeriodic: false)
             if let expectedEventId,
@@ -561,6 +574,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             let view = try await clientService.vault().ciphers().decrypt(cipher: cipher)
             if view.isAliasConnectionCarrier { try payloads.append(AliasConnectionVaultCodec.decode(view)) }
         }
+        try await validate(context)
         decryptedPayloads = payloads
         return payloads
     }
@@ -587,8 +601,10 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         for cipher in output.ciphers where cipher.id.map(changedIds.contains) == true {
             try await validate(context)
             let encrypted = try await clientService.vault().ciphers().encrypt(cipherView: cipher)
+            try await validate(context)
             try await cipherService.updateCipherWithServer(
                 encrypted.cipher,
+                encryptedByKeyId: encrypted.encryptedByKeyId,
                 encryptedFor: encrypted.encryptedFor,
             )
         }
@@ -643,6 +659,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                 address: reference.address,
             ))
         }
+        try await validate(context)
         return identities
     }
 
@@ -693,9 +710,11 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     // MARK: - Safety helpers
 
     private func context() async throws -> Context {
+        let operationGeneration = generation
         let userId = try await stateService.getActiveAccountId()
-        guard await !vaultTimeoutService.isLocked(userId: userId) else { throw EmailAliasError.locked }
-        return Context(userId: userId, generation: generation)
+        let context = Context(userId: userId, generation: operationGeneration)
+        try await validate(context)
+        return context
     }
 
     private func validate(_ context: Context) async throws {
@@ -707,6 +726,8 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         guard await !vaultTimeoutService.isLocked(userId: context.userId) else {
             throw EmailAliasError.locked
         }
+        try Task.checkCancellation()
+        guard generation == context.generation else { throw CancellationError() }
     }
 
     private func canonicalBaseUrl(_ value: String) throws -> String {

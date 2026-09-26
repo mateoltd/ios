@@ -42,6 +42,7 @@ class MockGeneratorRepository: GeneratorRepository {
     var createEmailAliasHandler: ((String, String, String?) async throws -> EmailAliasResult)?
     var createEmailAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
     var deleteEmailAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var loadEmailAliasProfileHandler: ((String) async throws -> EmailAliasProfile?)?
     var loadEmailAliasProfileResult: Result<EmailAliasProfile?, Error> = .success(nil)
     var reconcileEmailAliasesResult: Result<EmailAliasResult?, Error> = .success(nil)
     var setEmailAliasEnabledResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
@@ -113,6 +114,9 @@ class MockGeneratorRepository: GeneratorRepository {
 
     func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile? {
         emailAliasBaseUrl = baseUrl
+        if let loadEmailAliasProfileHandler {
+            return try await loadEmailAliasProfileHandler(baseUrl)
+        }
         return try loadEmailAliasProfileResult.get()
     }
 

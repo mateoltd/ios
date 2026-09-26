@@ -56,6 +56,9 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
     /// The task used to generate a new value so it can be cancelled if needed.
     private var generateValueTask: Task<Void, Never>?
 
+    /// Invalidates local profile reads when settings or the vault lifecycle change.
+    private var emailAliasStateGeneration: UInt64 = 0
+
     /// Clears view-owned decrypted alias state on logout or account switch.
     private var accountLifecycleTask: Task<Void, Never>?
 
@@ -128,7 +131,9 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
     override func perform(_ effect: GeneratorEffect) async {
         switch effect {
         case .appeared:
+            let generation = emailAliasStateGeneration
             await reloadGeneratorOptions()
+            guard generation == emailAliasStateGeneration else { return }
             if state.isSimpleLoginAlias {
                 await loadCachedEmailAlias()
             } else if !state.isForwardedEmailAlias {
@@ -194,6 +199,8 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
                 await services.reviewPromptService.trackUserAction(.copiedOrInsertedGeneratedValue)
             }
         case let .generatorTypeChanged(generatorType):
+            invalidateEmailAliasWork()
+            state.emailAliasResult = nil
             state.generatorType = generatorType
         case .refreshGeneratedValue:
             // Generating a new value happens below.
@@ -229,6 +236,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
             state[keyPath: field.keyPath] = value
 
             if state.isForwardedEmailAlias {
+                invalidateEmailAliasWork()
                 state.emailAliasResult = nil
                 state.generatedValue = ""
             }
@@ -246,10 +254,12 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         case let .toggleValueChanged(field, isOn):
             state[keyPath: field.keyPath] = isOn
         case let .usernameForwardedEmailServiceChanged(forwardedEmailService):
+            invalidateEmailAliasWork()
             state.usernameState.forwardedEmailService = forwardedEmailService
             state.emailAliasResult = nil
             state.generatedValue = ""
         case let .usernameGeneratorTypeChanged(usernameGeneratorType):
+            invalidateEmailAliasWork()
             state.usernameState.usernameGeneratorType = usernameGeneratorType
             state.emailAliasResult = nil
         case .viewDisappeared:
@@ -411,6 +421,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
     /// Fetches the user's saved generator options and updates the state with the previous selections.
     ///
     func loadGeneratorOptions() async throws {
+        let generation = emailAliasStateGeneration
         let (passwordOptions, isPolicyInEffect) = try await services.generatorRepository
             .getEffectivePasswordGenerationOptions(rules: state.forcedPasswordRules)
         if let rules = state.forcedPasswordRules {
@@ -421,16 +432,20 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         state.passwordState.update(with: passwordOptions)
 
         let usernameOptions = try await services.generatorRepository.getUsernameGenerationOptions()
-        state.usernameState.update(with: usernameOptions)
         didLoadGeneratorOptions = true
+        guard generation == emailAliasStateGeneration else { return }
+        state.usernameState.update(with: usernameOptions)
     }
 
     /// Loads a cached alias from the encrypted local vault without contacting the provider.
     private func loadCachedEmailAlias() async {
+        let generation = emailAliasStateGeneration
         do {
             guard let profile = try await services.generatorRepository.loadEmailAliasProfile(
                 baseUrl: state.usernameState.simpleLoginSelfHostServerUrl,
             ) else { return }
+            try Task.checkCancellation()
+            guard generation == emailAliasStateGeneration, state.isSimpleLoginAlias else { return }
             state.usernameState.simpleLoginAPIKey = profile.token
             state.usernameState.simpleLoginSelfHostServerUrl = profile.baseUrl
             if let alias = profile.cachedAlias, alias.status != .deleted {
@@ -490,7 +505,13 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         }
     }
 
+    private func invalidateEmailAliasWork() {
+        emailAliasStateGeneration &+= 1
+        generateValueTask?.cancel()
+    }
+
     private func clearEmailAliasState() {
+        invalidateEmailAliasWork()
         if state.emailAliasResult != nil {
             state.generatedValue = ""
         }

@@ -244,6 +244,7 @@ class CompleteRegistrationProcessor: StateProcessor<// swiftlint:disable:this ty
                     acceptEmergencyAccessId: nil,
                     providerInviteToken: nil,
                     providerUserId: nil,
+                    openOrgInvite: nil,
                 ),
             )
 
