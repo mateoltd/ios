@@ -54,6 +54,14 @@ protocol GeneratorRepository: AnyObject {
     ///
     func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String
 
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult]
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity]
+
     /// Loads a SimpleLogin profile and cached alias only from the encrypted local vault.
     func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile?
 
@@ -266,6 +274,25 @@ extension DefaultGeneratorRepository: GeneratorRepository {
         }
         guard let sdkRequest = settings.sdkRequest else { throw EmailAliasError.invalidConfiguration }
         return try await clientService.generators().username(settings: sdkRequest)
+    }
+
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        try await emailAliasService.loadBoundAlias(target)
+    }
+
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try await emailAliasService.refreshAlias(alias)
+    }
+
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult] {
+        try await emailAliasService.recoverAliases(baseUrl: baseUrl)
+    }
+
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        try await emailAliasService.contacts(alias, operation: operation)
     }
 
     func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile? {

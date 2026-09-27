@@ -10,9 +10,30 @@ struct EmailAliasProfile: Equatable, Sendable {
     let baseUrl: String
     let connectionId: String
     let cachedAlias: EmailAliasResult?
+    var recoveryNeeded = false
+}
+
+enum EmailAliasContactOperation: Equatable, Sendable {
+    case list
+    case create(recipient: String)
+    case remove(SendReplyIdentity)
+    case setBlocked(SendReplyIdentity, Bool)
+}
+
+struct BoundEmailAlias: Equatable, Sendable {
+    let cipherId: String
+    let userId: String
+    let reference: String
 }
 
 protocol EmailAliasService: AnyObject {
+    /// Resolves a saved personal login against its current encrypted vault binding.
+    func loadBoundAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult
+    func refreshAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult
+    /// Syncs and lists observed, unbound aliases without retrying uncertain creation.
+    func recoverAliases(baseUrl: String) async throws -> [EmailAliasResult]
+    func contacts(_ alias: EmailAliasResult, operation: EmailAliasContactOperation) async throws -> [SendReplyIdentity]
+
     /// Loads encrypted local state only. This method must never contact the alias provider.
     func loadProfile(baseUrl: String) async throws -> EmailAliasProfile?
 
@@ -117,7 +138,10 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             token: state.credential.token,
             baseUrl: state.credential.baseUrl,
             connectionId: state.connection.connectionId,
-            cachedAlias: cachedAlias(in: state.journal, excluding: used),
+            cachedAlias: cachedAlias(in: state.journal, excluding: used, userId: context.userId),
+            recoveryNeeded: reduceAliasJournal(journal: state.journal).operations.contains {
+                $0.operation == .create && ($0.phase == .dispatched || $0.phase == .outcomeUnknown)
+            },
         )
     }
 
@@ -136,7 +160,183 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     }
 
     func reconcile(baseUrl: String) async throws -> EmailAliasResult? {
+        try await runOperation { try await self.performReconciliation(baseUrl: baseUrl).first }
+    }
+
+    func loadBoundAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        let context = try await context()
+        defer { clearDecryptedState() }
+        guard context.userId == target.userId else { throw EmailAliasError.accountChanged }
+        let ciphers = try await cipherService.fetchAllCiphers()
+        guard let encrypted = ciphers.first(where: { $0.id == target.cipherId }) else {
+            throw EmailAliasError.conflict
+        }
+        let cipher = try await clientService.vault().ciphers().decrypt(cipher: encrypted)
+        try await validate(context)
+        guard cipher.organizationId == nil, cipher.deletedDate == nil,
+              cipher.login?.aliasReference == target.reference,
+              let reference = try? parseAliasReference(value: target.reference),
+              cipher.login?.username == reference.address
+        else { throw EmailAliasError.conflict }
+        let identity = AliasIdentity(
+            version: reference.version,
+            connectionId: reference.connectionId,
+            aliasId: reference.aliasId,
+            address: reference.address,
+        )
+        let state = try await requiredConnection(for: identity, context: context)
+        let reduced = try reduceAliasJournal(journal: state.journal)
+        guard reduced.conflicts.isEmpty else { throw EmailAliasError.conflict }
+        let resource = reduced.resources.first { $0.identity == identity }
+        try await validate(context)
+        var alias = try result(identity, lifecycle: resource?.lifecycle ?? .enabled, userId: context.userId)
+        if resource == nil { alias.status = .unknown }
+        return alias
+    }
+
+    func refreshAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try await runOperation { try await self.performRefresh(alias) }
+    }
+
+    private func performRefresh(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        let context = try await context()
+        try await syncService.fetchSync(forceSync: true, isPeriodic: false)
+        try await validate(context)
+        var state = try await ownedConnection(for: alias, context: context)
+        let client = try makeClient(state)
+        let observed: BitwardenSdk.Alias
+        do {
+            observed = try await client.get(identity: alias.identity)
+        } catch AliasError.NotFound {
+            try await validate(context)
+            try await appendAndPersist(
+                operationId: UUID().uuidString.lowercased(), operation: .get, phase: .acknowledged,
+                target: alias.identity, lifecycle: .deleted, state: &state, context: context,
+            )
+            var deleted = alias
+            deleted.status = .deleted
+            deleted.journalPersistenceFailed = false
+            return deleted
+        }
+        try await validate(context)
+        guard observed.identity == alias.identity else { throw EmailAliasError.conflict }
+        try await appendAndPersist(
+            operationId: UUID().uuidString.lowercased(), operation: .get, phase: .acknowledged,
+            target: observed.identity, lifecycle: observed.lifecycle, state: &state, context: context,
+        )
+        return try result(observed, userId: context.userId)
+    }
+
+    func recoverAliases(baseUrl: String) async throws -> [EmailAliasResult] {
         try await runOperation { try await self.performReconciliation(baseUrl: baseUrl) }
+    }
+
+    func contacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        try await runOperation { try await self.performContacts(alias, operation: operation) }
+    }
+
+    private func ownedConnection(for alias: EmailAliasResult, context: Context) async throws -> ConnectionState {
+        guard alias.ownerUserId == context.userId else { throw EmailAliasError.accountChanged }
+        return try await requiredConnection(for: alias.identity, context: context)
+    }
+
+    // Contact mutations use the same encrypted dispatch barrier as alias creation. A subsequent
+    // list may recover the result, but cannot prove that an absent contact was never created.
+    private func performContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        let context = try await context()
+        var state = try await ownedConnection(for: alias, context: context)
+        let client = try makeClient(state)
+        let existing = try await listContacts(alias.identity, client: client, context: context)
+        let kind: AliasOperationKind
+        switch operation {
+        case .list: return existing
+        case let .create(recipient):
+            guard recipient == recipient.trimmingCharacters(in: .whitespacesAndNewlines),
+                  recipient.split(separator: "@").count == 2,
+                  !recipient.contains(where: { $0.isWhitespace || $0 == "<" || $0 == ">" }),
+                  !recipient.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            else { throw EmailAliasError.invalidConfiguration }
+            if existing.contains(where: { $0.recipient.caseInsensitiveCompare(recipient) == .orderedSame }) {
+                return existing
+            }
+            let reduced = try reduceAliasJournal(journal: state.journal)
+            guard reduced.conflicts.isEmpty else { throw EmailAliasError.conflict }
+            guard !reduced.operations.contains(where: {
+                $0.operation == .createSendReplyIdentity && $0.target == alias.identity
+                    && ($0.phase == .dispatched || $0.phase == .outcomeUnknown)
+            }) else { throw EmailAliasError.operationOutcomeUnknown }
+            kind = .createSendReplyIdentity
+        case let .remove(contact), let .setBlocked(contact, _):
+            guard contact.alias == alias.identity, existing.contains(where: { $0 == contact }) else {
+                throw EmailAliasError.conflict
+            }
+            kind = if case .remove = operation { .removeSendReplyIdentity } else { .setSendReplyBlocked }
+        }
+        let operationId = UUID().uuidString.lowercased()
+        try await prepareAndDispatch(
+            operationId: operationId, operation: kind, target: alias.identity, state: &state, context: context,
+        )
+        do {
+            switch operation {
+            case .list: break
+            case let .create(recipient):
+                _ = try await client.createSendReplyIdentity(request: CreateSendReplyIdentityRequest(
+                    alias: alias.identity, recipient: recipient,
+                ))
+            case let .remove(contact): try await client.removeSendReplyIdentity(identity: contact)
+            case let .setBlocked(contact, blocked):
+                _ = try await client.setSendReplyBlocked(identity: contact, blocked: blocked)
+            }
+            try await validate(context)
+            do {
+                try await appendAndPersist(
+                    operationId: operationId, operation: kind, phase: .acknowledged,
+                    target: alias.identity, state: &state, context: context,
+                )
+            } catch {
+                try await validate(context)
+                throw EmailAliasError.operationOutcomeUnknown
+            }
+            return try await listContacts(alias.identity, client: client, context: context)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as AliasError {
+            try await validate(context)
+            try? await recordFailure(
+                FailureRecord(error: error, operationId: operationId, operation: kind, target: alias.identity),
+                state: &state, context: context,
+            )
+            throw map(error)
+        }
+    }
+
+    private func listContacts(
+        _ alias: AliasIdentity,
+        client: any AliasClientProtocol,
+        context: Context,
+    ) async throws -> [SendReplyIdentity] {
+        var contacts = [SendReplyIdentity]()
+        var token: String?
+        var tokens = Set<String>()
+        for _ in 0 ..< 32 {
+            let page = try await client.listSendReplyIdentities(alias: alias, pageToken: token)
+            try await validate(context)
+            guard page.identities.allSatisfy({ $0.alias == alias }) else { throw EmailAliasError.conflict }
+            contacts.append(contentsOf: page.identities)
+            guard Set(contacts.map(\.identityId)).count == contacts.count else {
+                throw EmailAliasError.invalidEncryptedState
+            }
+            guard let next = page.nextPageToken else { return contacts }
+            guard tokens.insert(next).inserted else { throw EmailAliasError.invalidEncryptedState }
+            token = next
+        }
+        throw EmailAliasError.invalidEncryptedState
     }
 
     func cancelAndClear() {
@@ -164,7 +364,9 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             }
         }
         return try await withTaskCancellationHandler {
-            try await task.value
+            let result = try await task.value
+            try Task.checkCancellation()
+            return result
         } onCancel: {
             task.cancel()
         }
@@ -203,7 +405,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             // write may reuse only a previously observed and currently unbound resource.
             state.journal = originalJournal
             let used = try await boundAliases(context: context)
-            if let cached = try cachedAlias(in: state.journal, excluding: used) { return cached }
+            if let cached = try cachedAlias(in: state.journal, excluding: used, userId: context.userId) { return cached }
             throw error
         }
 
@@ -211,7 +413,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         do {
             let alias = try await client.create(request: CreateAliasRequest(hostname: normalizedHostname(hostname)))
             try await validate(context)
-            var result = try result(alias)
+            var result = try result(alias, userId: context.userId)
             do {
                 try await appendAndPersist(
                     operationId: operationId,
@@ -242,20 +444,20 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         } catch {
             try await validate(context)
             try? await recordFailure(FailureRecord(
-                error: .LocalSecurityFailure,
+                error: .OutcomeUnknown,
                 operationId: operationId,
                 operation: .create,
                 target: nil,
             ),
             state: &state,
             context: context)
-            throw EmailAliasError.providerRejected
+            throw EmailAliasError.operationOutcomeUnknown
         }
     }
 
     private func performSetEnabled(_ result: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult {
         let context = try await context()
-        var state = try await requiredConnection(for: result.identity, context: context)
+        var state = try await ownedConnection(for: result, context: context)
         let operation: AliasOperationKind = enabled ? .enable : .disable
         let lifecycle: AliasLifecycleState = enabled ? .enabled : .disabled
         let operationId = UUID().uuidString.lowercased()
@@ -271,7 +473,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         do {
             let alias = try await client.setEnabled(identity: result.identity, enabled: enabled)
             try await validate(context)
-            var updated = try self.result(alias)
+            var updated = try self.result(alias, userId: context.userId)
             do {
                 try await appendAndPersist(
                     operationId: operationId,
@@ -306,7 +508,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
 
     private func performDelete(_ result: EmailAliasResult) async throws -> EmailAliasResult {
         let context = try await context()
-        var state = try await requiredConnection(for: result.identity, context: context)
+        var state = try await ownedConnection(for: result, context: context)
         let operationId = UUID().uuidString.lowercased()
         try await prepareAndDispatch(
             operationId: operationId,
@@ -358,12 +560,12 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     }
 
     // swiftlint:disable:next function_body_length
-    private func performReconciliation(baseUrl: String) async throws -> EmailAliasResult? {
+    private func performReconciliation(baseUrl: String) async throws -> [EmailAliasResult] {
         let context = try await context()
         try await syncService.fetchSync(forceSync: true, isPeriodic: false)
         try await validate(context)
         let endpoint = try canonicalBaseUrl(baseUrl)
-        guard var state = try await loadConnection(baseUrl: endpoint, context: context) else { return nil }
+        guard var state = try await loadConnection(baseUrl: endpoint, context: context) else { return [] }
 
         let operationId = UUID().uuidString.lowercased()
         try await prepareAndDispatch(
@@ -408,7 +610,10 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                 context: context,
             )
             let used = try await boundAliases(context: context)
-            return try cachedAlias(in: state.journal, excluding: used)
+            try await validate(context)
+            return try aliases.filter { !used.contains($0.identity) }.map {
+                try result($0, userId: context.userId)
+            }
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as AliasError {
@@ -518,6 +723,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                    payload.connection.connectionId == state.connection.connectionId
                        && payload.journal.events.contains(where: { $0.eventId == expectedEventId })
                }) {
+                try await validate(context)
                 return
             }
             throw EmailAliasError.conflict
@@ -546,7 +752,9 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         else { throw EmailAliasError.invalidEncryptedState }
         let matching = try await loadPayloads(context: context)
             .filter { $0.connection.connectionId == identity.connectionId }
-        guard !matching.isEmpty else { throw EmailAliasError.conflict }
+        guard !matching.isEmpty,
+              matching.allSatisfy({ $0.connection.adapter.adapterId == adapter.adapterId })
+        else { throw EmailAliasError.conflict }
         return try assembleConnection(matching, context: context)
     }
 
@@ -562,6 +770,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             throw EmailAliasError.conflict
         }
         let journal = try AliasJournal.merged(payloads.map(\.journal), connectionId: connection.connectionId)
+        guard try reduceAliasJournal(journal: journal).conflicts.isEmpty else { throw EmailAliasError.conflict }
         return ConnectionState(connection: connection, credential: credential, journal: journal)
     }
 
@@ -613,6 +822,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
     private func cachedAlias(
         in journal: AliasJournal,
         excluding usedAliases: Set<AliasIdentity>,
+        userId: String,
     ) throws -> EmailAliasResult? {
         let reduced: AliasJournalState
         do { reduced = try reduceAliasJournal(journal: journal) } catch { throw EmailAliasError.invalidEncryptedState }
@@ -626,10 +836,9 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
                 && resource.lifecycle == .enabled
                 && !usedAliases.contains(resource.identity)
         }) else {
-            if hasUnknownCreate { throw EmailAliasError.operationOutcomeUnknown }
             return nil
         }
-        var result = try result(resource.identity, lifecycle: resource.lifecycle)
+        var result = try result(resource.identity, lifecycle: resource.lifecycle, userId: userId)
         if hasUnknownCreate { result.status = .unknown }
         return result
     }
@@ -681,7 +890,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         context: context)
         if error == .OutcomeUnknown {
             let used = try await boundAliases(context: context)
-            if var cached = try cachedAlias(in: state.journal, excluding: used) {
+            if var cached = try cachedAlias(in: state.journal, excluding: used, userId: context.userId) {
                 cached.status = .unknown
                 return cached
             }
@@ -750,16 +959,21 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         try adapter.makeClient(state.connection, state.credential)
     }
 
-    private func result(_ alias: BitwardenSdk.Alias) throws -> EmailAliasResult {
-        try result(alias.identity, lifecycle: alias.lifecycle)
+    private func result(_ alias: BitwardenSdk.Alias, userId: String) throws -> EmailAliasResult {
+        try result(alias.identity, lifecycle: alias.lifecycle, userId: userId)
     }
 
-    private func result(_ identity: AliasIdentity, lifecycle: AliasLifecycleState) throws -> EmailAliasResult {
+    private func result(
+        _ identity: AliasIdentity,
+        lifecycle: AliasLifecycleState,
+        userId: String,
+    ) throws -> EmailAliasResult {
         try EmailAliasResult(
             address: identity.address,
             reference: createAliasReference(identity: identity),
             identity: identity,
             status: status(lifecycle),
+            ownerUserId: userId,
         )
     }
 

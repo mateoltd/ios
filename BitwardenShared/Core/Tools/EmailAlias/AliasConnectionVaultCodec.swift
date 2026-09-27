@@ -40,6 +40,9 @@ struct EmailAliasResult: Equatable, Sendable {
     let identity: AliasIdentity
     var status: EmailAliasLifecycleStatus
     var journalPersistenceFailed = false
+
+    /// Session owner of decrypted results; never serialized into an alias reference.
+    var ownerUserId: String?
 }
 
 enum EmailAliasError: Error, Equatable {

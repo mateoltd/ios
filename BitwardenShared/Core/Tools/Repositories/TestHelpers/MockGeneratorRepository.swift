@@ -4,6 +4,34 @@ import Combine
 @testable import BitwardenShared
 
 class MockGeneratorRepository: GeneratorRepository {
+    var boundAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var refreshedAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var recoveredAliasesResult: Result<[EmailAliasResult], Error> = .success([])
+    var contactsResult: Result<[SendReplyIdentity], Error> = .success([])
+    var contactOperation: EmailAliasContactOperation?
+    var boundTarget: BoundEmailAlias?
+
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        boundTarget = target
+        return try boundAliasResult.get()
+    }
+
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try refreshedAliasResult.get()
+    }
+
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult] {
+        try recoveredAliasesResult.get()
+    }
+
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        contactOperation = operation
+        return try contactsResult.get()
+    }
+
     var addPasswordHistoryCalled = false
 
     var clearPasswordHistoryCalled = false

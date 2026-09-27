@@ -1,6 +1,36 @@
+import BitwardenSdk
+
 @testable import BitwardenShared
 
 final class MockEmailAliasService: EmailAliasService {
+    var boundAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var refreshedAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var recoveredAliasesResult: Result<[EmailAliasResult], Error> = .success([])
+    var contactsResult: Result<[SendReplyIdentity], Error> = .success([])
+    var contactOperation: EmailAliasContactOperation?
+    var boundTarget: BoundEmailAlias?
+
+    func loadBoundAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        boundTarget = target
+        return try boundAliasResult.get()
+    }
+
+    func refreshAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try refreshedAliasResult.get()
+    }
+
+    func recoverAliases(baseUrl: String) async throws -> [EmailAliasResult] {
+        try recoveredAliasesResult.get()
+    }
+
+    func contacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        contactOperation = operation
+        return try contactsResult.get()
+    }
+
     var cancelAndClearCalled = false
     var createAliasCallCount = 0
     var createAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)

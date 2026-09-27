@@ -327,6 +327,136 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 4)
     }
 
+    /// A saved login can be managed even though generator reuse excludes it.
+    func test_loadBoundAlias_resolvesSavedBindingWithoutProvider() async throws {
+        let alias = try aliasResult()
+        let login = CipherView.fixture(
+            id: "saved-login", login: .fixture(username: alias.address, aliasReference: alias.reference),
+        )
+        cipherService.fetchAllCiphersResult = try .success([
+            Cipher(cipherView: carrier(observedAlias: true)), Cipher(cipherView: login),
+        ])
+        let profile = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
+        XCTAssertNil(profile?.cachedAlias)
+        let result = try await subject.loadBoundAlias(BoundEmailAlias(
+            cipherId: "saved-login", userId: "account-1", reference: alias.reference,
+        ))
+        XCTAssertEqual(result, alias)
+        XCTAssertEqual(fakeClient.providerCallCount, 0)
+    }
+
+    /// A stale route cannot read another account, or a login whose username/binding changed.
+    func test_loadBoundAlias_rejectsStaleOwnerAndBinding() async throws {
+        let alias = try aliasResult()
+        cipherService.fetchAllCiphersResult = try .success([
+            Cipher(cipherView: carrier(observedAlias: true)),
+            Cipher(cipherView: .fixture(
+                id: "saved-login", login: .fixture(username: "changed@example.com", aliasReference: alias.reference),
+            )),
+        ])
+        for owner in ["account-2", "account-1"] {
+            do {
+                _ = try await subject.loadBoundAlias(BoundEmailAlias(
+                    cipherId: "saved-login", userId: owner, reference: alias.reference,
+                ))
+                XCTFail("A stale route was accepted")
+            } catch {
+                XCTAssertEqual(error as? EmailAliasError, owner == "account-2" ? .accountChanged : .conflict)
+            }
+        }
+        XCTAssertEqual(fakeClient.providerCallCount, 0)
+    }
+
+    func test_setAliasEnabled_rejectsResultFromOtherAccount() async throws {
+        var alias = try aliasResult()
+        alias.ownerUserId = "account-2"
+        do {
+            _ = try await subject.setAliasEnabled(alias, enabled: false)
+            XCTFail("A stale result was accepted")
+        } catch { XCTAssertEqual(error as? EmailAliasError, .accountChanged) }
+        XCTAssertEqual(fakeClient.providerCallCount, 0)
+    }
+
+    /// A new process recovers credentials/journal from encrypted sync carriers, not ordinary exports.
+    func test_recovery_syncedCarrierPreservesUnknownCreateWithoutRepeatingIt() async throws {
+        var payload = try carrierPayload()
+        let operationId = UUID().uuidString.lowercased()
+        for phase in [AliasOperationPhase.prepared, .dispatched] {
+            _ = try payload.journal.append(
+                replicaId: "22222222-2222-4222-8222-222222222222",
+                operationId: operationId, operation: .create, phase: phase,
+            )
+        }
+        cipherService.fetchAllCiphersResult = try .success([
+            Cipher(cipherView: AliasConnectionVaultCodec.encode(payload)),
+        ])
+        let profile = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
+        XCTAssertEqual(profile?.recoveryNeeded, true)
+        XCTAssertEqual(profile?.token, "encrypted-provider-token")
+        XCTAssertNil(profile?.cachedAlias)
+        let aliases = try await subject.recoverAliases(baseUrl: "https://app.simplelogin.io/")
+        XCTAssertEqual(syncService.fetchSyncForceSync, true)
+        XCTAssertEqual(aliases.map(\.address), ["alias@example.com"])
+        do {
+            _ = try await subject.createAlias(
+                token: "encrypted-provider-token", baseUrl: "https://app.simplelogin.io/", hostname: nil,
+            )
+            XCTFail("An uncertain create was repeated")
+        } catch { XCTAssertEqual(error as? EmailAliasError, .operationOutcomeUnknown) }
+        XCTAssertEqual(fakeClient.createCallCount, 0)
+    }
+
+    /// Read/list recovery never creates a duplicate reverse identity for the same recipient.
+    func test_contacts_existingRecipientIsReusedWithoutMutation() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
+        fakeClient.contactIdentities = [fakeClient.contactFixture()]
+        let contacts = try await subject.contacts(aliasResult(), operation: .create(recipient: "PERSON@example.com"))
+        XCTAssertEqual(contacts, fakeClient.contactIdentities)
+        XCTAssertEqual(fakeClient.contactCreateCallCount, 0)
+        XCTAssertTrue(cipherService.addCipherWithServerCiphers.isEmpty)
+    }
+
+    /// An uncertain contact create is durable across restart; list still works, blind creation does not.
+    func test_contacts_uncertainCreateAllowsListButRejectsAnotherCreate() async throws {
+        var payload = try carrierPayload(observedAlias: true)
+        let operationId = UUID().uuidString.lowercased()
+        for phase in [AliasOperationPhase.prepared, .dispatched] {
+            _ = try payload.journal.append(
+                replicaId: "22222222-2222-4222-8222-222222222222", operationId: operationId,
+                operation: .createSendReplyIdentity, phase: phase, target: fakeClient.aliasFixture().identity,
+            )
+        }
+        cipherService.fetchAllCiphersResult = try .success([
+            Cipher(cipherView: AliasConnectionVaultCodec.encode(payload)),
+        ])
+        let contacts = try await subject.contacts(aliasResult(), operation: .list)
+        XCTAssertTrue(contacts.isEmpty)
+        do {
+            _ = try await subject.contacts(aliasResult(), operation: .create(recipient: "person@example.com"))
+            XCTFail("A second identity was created")
+        } catch { XCTAssertEqual(error as? EmailAliasError, .operationOutcomeUnknown) }
+        XCTAssertEqual(fakeClient.contactCreateCallCount, 0)
+    }
+
+    func test_contacts_dispatchFailureDoesNotCreateIdentity() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
+        cipherService.addCipherWithServerResult = .failure(OfflineError())
+        do {
+            _ = try await subject.contacts(aliasResult(), operation: .create(recipient: "person@example.com"))
+            XCTFail("Dispatch without durable encrypted state was accepted")
+        } catch { XCTAssertEqual(error as? EmailAliasError, .conflict) }
+        XCTAssertEqual(fakeClient.contactCreateCallCount, 0)
+    }
+
+    func test_refreshAlias_preservesIdentityAndPersistsObservation() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier(observedAlias: true))])
+        let refreshed = try await subject.refreshAlias(aliasResult())
+        XCTAssertEqual(refreshed, try aliasResult())
+        XCTAssertEqual(fakeClient.getCallCount, 1)
+        XCTAssertEqual(fakeClient.createCallCount, 0)
+        XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 1)
+    }
+
     private func aliasResult() throws -> EmailAliasResult {
         let identity = fakeClient.aliasFixture().identity
         return try EmailAliasResult(
@@ -334,6 +464,7 @@ final class EmailAliasServiceTests: BitwardenTestCase {
             reference: createAliasReference(identity: identity),
             identity: identity,
             status: .enabled,
+            ownerUserId: "account-1",
         )
     }
 
@@ -371,6 +502,9 @@ private struct OfflineError: Error, Equatable {}
 
 private final class FakeAliasClient: AliasClient, @unchecked Sendable {
     let testConnection: AliasConnection
+    var contactCreateCallCount = 0
+    var contactIdentities = [SendReplyIdentity]()
+    var getCallCount = 0
     var createCallCount = 0
     var createHandler: (@Sendable () async throws -> BitwardenSdk.Alias)?
     var deleteCallCount = 0
@@ -399,6 +533,30 @@ private final class FakeAliasClient: AliasClient, @unchecked Sendable {
         lastCreateRequest = request
         if let createHandler { return try await createHandler() }
         return aliasFixture()
+    }
+
+    override func get(identity: AliasIdentity) async throws -> BitwardenSdk.Alias {
+        getCallCount += 1
+        providerCallCount += 1
+        return aliasFixture()
+    }
+
+    override func listSendReplyIdentities(alias: AliasIdentity, pageToken: String?) async throws -> SendReplyIdentityPage {
+        providerCallCount += 1
+        return SendReplyIdentityPage(identities: contactIdentities, nextPageToken: nil)
+    }
+
+    override func createSendReplyIdentity(request: CreateSendReplyIdentityRequest) async throws -> SendReplyIdentity {
+        contactCreateCallCount += 1
+        providerCallCount += 1
+        return contactFixture()
+    }
+
+    func contactFixture() -> SendReplyIdentity {
+        SendReplyIdentity(
+            alias: aliasFixture().identity, identityId: "7", recipient: "person@example.com",
+            address: "reverse@example.com", valid: true, blocked: false,
+        )
     }
 
     override func delete(identity: AliasIdentity) async throws -> DeleteAliasResult {
