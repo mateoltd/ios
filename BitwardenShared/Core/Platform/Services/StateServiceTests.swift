@@ -1609,6 +1609,7 @@ class StateServiceTests: BitwardenTestCase { // swiftlint:disable:this type_body
         try await subject.setDisableAutoTotpCopy(true)
         try await subject.setPasswordGenerationOptions(PasswordGenerationOptions(length: 30))
         appSettingsStore.setUserKeyId("USER_KEY_ID", userId: "1")
+        appSettingsStore.setV2EncryptedMigrationsGracePeriodStart(Date(), userId: "1")
         appSettingsStore.setV2UpgradeToken(
             V2UpgradeToken(wrappedUserKey1: "WRAPPED_USER_KEY_1", wrappedUserKey2: "WRAPPED_USER_KEY_2"),
             userId: "1",
@@ -1654,6 +1655,7 @@ class StateServiceTests: BitwardenTestCase { // swiftlint:disable:this type_body
         XCTAssertEqual(appSettingsStore.passwordGenerationOptions, [:])
         XCTAssertEqual(appSettingsStore.userKeyIdByUserId, [:])
         XCTAssertEqual(appSettingsStore.v2UpgradeTokenByUserId, [:])
+        XCTAssertEqual(appSettingsStore.migrationGracePeriodStarts, [:])
         XCTAssertTrue(keychainRepository.clearLocalUserDataKeyStatesCalled)
 
         let context = dataStore.persistentContainer.viewContext

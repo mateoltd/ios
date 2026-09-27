@@ -183,10 +183,16 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         await subject.perform(.appeared)
         let alias = aliasResult()
         subject.state.emailAliasResult = alias
-        subject.state.aliasContacts = [SendReplyIdentity(
-            alias: alias.identity, identityId: "7", recipient: "person@example.com",
-            address: "reverse@example.com", valid: true, blocked: false,
-        )]
+        subject.state.aliasContacts = [
+            SendReplyIdentity(
+                alias: alias.identity,
+                identityId: "7",
+                recipient: "person@example.com",
+                address: "reverse@example.com",
+                valid: true,
+                blocked: false,
+            ),
+        ]
         subject.state.aliasRecipient = "person@example.com"
         subject.state.url = URL(string: "mailto:reverse@example.com")
         vaultTimeoutService.vaultLockStatusSubject.send(VaultLockStatus(isVaultLocked: true, userId: "1"))
@@ -205,8 +211,12 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         var alias = aliasResult()
         alias.ownerUserId = "1"
         let contact = SendReplyIdentity(
-            alias: alias.identity, identityId: "7", recipient: "person@example.com",
-            address: "reverse@example.com?bcc=other@example.com", valid: true, blocked: false,
+            alias: alias.identity,
+            identityId: "7",
+            recipient: "person@example.com",
+            address: "reverse@example.com?bcc=other@example.com",
+            valid: true,
+            blocked: false,
         )
         subject.state.emailAliasResult = alias
         subject.state.aliasContacts = [contact]

@@ -1,3 +1,5 @@
+// swiftlint:disable file_length
+
 import BitwardenKitMocks
 import BitwardenSdk
 import XCTest
@@ -50,6 +52,48 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         super.tearDown()
     }
 
+    private func aliasResult() throws -> EmailAliasResult {
+        let identity = fakeClient.aliasFixture().identity
+        return try EmailAliasResult(
+            address: identity.address,
+            reference: createAliasReference(identity: identity),
+            identity: identity,
+            status: .enabled,
+            ownerUserId: "account-1",
+        )
+    }
+
+    private func carrier(observedAlias: Bool = false) throws -> CipherView {
+        try AliasConnectionVaultCodec.encode(carrierPayload(observedAlias: observedAlias))
+    }
+
+    private func carrierPayload(observedAlias: Bool = false) throws -> AliasConnectionVaultPayload {
+        let connection = SimpleLoginAliasAdapter.makeConnection(connectionId: connectionId)
+        var journal = try AliasJournal.empty(connectionId: connectionId)
+        if observedAlias {
+            let alias = fakeClient.aliasFixture()
+            _ = try journal.append(
+                replicaId: "22222222-2222-4222-8222-222222222222",
+                operationId: "44444444-4444-4444-8444-444444444444",
+                operation: .get,
+                phase: .acknowledged,
+                target: alias.identity,
+                lifecycle: alias.lifecycle,
+            )
+        }
+        return AliasConnectionVaultPayload(
+            version: AliasConnectionSchema.version,
+            connection: connection,
+            credential: AliasConnectionCredential(
+                token: "encrypted-provider-token",
+                baseUrl: "https://app.simplelogin.io/",
+            ),
+            journal: journal,
+        )
+    }
+}
+
+extension EmailAliasServiceTests {
     /// Reading local state for view presentation never constructs or contacts the provider client.
     func test_loadProfile_doesNotContactProvider() async throws {
         let profile = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
@@ -326,7 +370,9 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(fakeClient.providerCallCount, 2)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 4)
     }
+}
 
+extension EmailAliasServiceTests {
     /// A saved login can be managed even though generator reuse excludes it.
     func test_loadBoundAlias_resolvesSavedBindingWithoutProvider() async throws {
         let alias = try aliasResult()
@@ -402,7 +448,9 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         for phase in [AliasOperationPhase.prepared, .dispatched] {
             _ = try payload.journal.append(
                 replicaId: "22222222-2222-4222-8222-222222222222",
-                operationId: operationId, operation: .create, phase: phase,
+                operationId: operationId,
+                operation: .create,
+                phase: phase,
             )
         }
         cipherService.fetchAllCiphersResult = try .success([
@@ -440,8 +488,11 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         let operationId = UUID().uuidString.lowercased()
         for phase in [AliasOperationPhase.prepared, .dispatched] {
             _ = try payload.journal.append(
-                replicaId: "22222222-2222-4222-8222-222222222222", operationId: operationId,
-                operation: .createSendReplyIdentity, phase: phase, target: fakeClient.aliasFixture().identity,
+                replicaId: "22222222-2222-4222-8222-222222222222",
+                operationId: operationId,
+                operation: .createSendReplyIdentity,
+                phase: phase,
+                target: fakeClient.aliasFixture().identity,
             )
         }
         cipherService.fetchAllCiphersResult = try .success([
@@ -473,46 +524,6 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         XCTAssertEqual(fakeClient.getCallCount, 1)
         XCTAssertEqual(fakeClient.createCallCount, 0)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 1)
-    }
-
-    private func aliasResult() throws -> EmailAliasResult {
-        let identity = fakeClient.aliasFixture().identity
-        return try EmailAliasResult(
-            address: identity.address,
-            reference: createAliasReference(identity: identity),
-            identity: identity,
-            status: .enabled,
-            ownerUserId: "account-1",
-        )
-    }
-
-    private func carrier(observedAlias: Bool = false) throws -> CipherView {
-        try AliasConnectionVaultCodec.encode(carrierPayload(observedAlias: observedAlias))
-    }
-
-    private func carrierPayload(observedAlias: Bool = false) throws -> AliasConnectionVaultPayload {
-        let connection = SimpleLoginAliasAdapter.makeConnection(connectionId: connectionId)
-        var journal = try AliasJournal.empty(connectionId: connectionId)
-        if observedAlias {
-            let alias = fakeClient.aliasFixture()
-            _ = try journal.append(
-                replicaId: "22222222-2222-4222-8222-222222222222",
-                operationId: "44444444-4444-4444-8444-444444444444",
-                operation: .get,
-                phase: .acknowledged,
-                target: alias.identity,
-                lifecycle: alias.lifecycle,
-            )
-        }
-        return AliasConnectionVaultPayload(
-            version: AliasConnectionSchema.version,
-            connection: connection,
-            credential: AliasConnectionCredential(
-                token: "encrypted-provider-token",
-                baseUrl: "https://app.simplelogin.io/",
-            ),
-            journal: journal,
-        )
     }
 }
 
@@ -575,8 +586,12 @@ private final class FakeAliasClient: AliasClient, @unchecked Sendable {
 
     func contactFixture() -> SendReplyIdentity {
         SendReplyIdentity(
-            alias: aliasFixture().identity, identityId: "7", recipient: "person@example.com",
-            address: "reverse@example.com", valid: true, blocked: false,
+            alias: aliasFixture().identity,
+            identityId: "7",
+            recipient: "person@example.com",
+            address: "reverse@example.com",
+            valid: true,
+            blocked: false,
         )
     }
 

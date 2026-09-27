@@ -551,7 +551,7 @@ class AddEditItemProcessorTests: BitwardenTestCase {
     /// A canonical alias binding is saved with the username without modifying passkey request data.
     @MainActor
     func test_didCreateEmailAlias_preservesLoginAndPasskeyData() throws {
-        let credential = Fido2Credential.fixture(
+        let credential = Fido2CredentialView.fixture(
             credentialId: "credential-id",
             rpId: "example.com",
             userName: "user",
@@ -575,7 +575,7 @@ class AddEditItemProcessorTests: BitwardenTestCase {
     /// A malformed binding is discarded without losing the generated login or passkey data.
     @MainActor
     func test_didCreateEmailAlias_invalidBindingDoesNotLoseLogin() {
-        let credential = Fido2Credential.fixture(credentialId: "credential-id", rpId: "example.com")
+        let credential = Fido2CredentialView.fixture(credentialId: "credential-id", rpId: "example.com")
         subject.state.loginState.fido2Credentials = [credential]
 
         subject.didCreateEmailAlias(reference: "not-a-canonical-reference")

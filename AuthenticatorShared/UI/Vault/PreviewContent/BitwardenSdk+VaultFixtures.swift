@@ -46,6 +46,7 @@ extension Cipher {
         notes: String? = nil,
         organizationId: String? = nil,
         organizationUseTotp: Bool = false,
+        partialData: String? = nil,
         passwordHistory: [PasswordHistory]? = nil,
         permissions: CipherPermissions? = nil,
         reprompt: BitwardenSdk.CipherRepromptType = .none,
@@ -81,12 +82,14 @@ extension Cipher {
             localData: localData,
             attachments: attachments,
             fields: fields,
+            partialData: String? = nil,
             passwordHistory: passwordHistory,
             creationDate: creationDate,
             deletedDate: deletedDate,
             revisionDate: revisionDate,
             archivedDate: archivedDate,
             data: nil,
+            partialData: partialData,
         )
     }
 }
@@ -112,6 +115,7 @@ extension CipherView {
         notes: String? = nil,
         organizationId: String? = nil,
         organizationUseTotp: Bool = false,
+        partial: Bool = false,
         passwordHistory: [PasswordHistoryView]? = nil,
         permissions: CipherPermissions? = nil,
         reprompt: BitwardenSdk.CipherRepromptType = .none,
@@ -148,11 +152,13 @@ extension CipherView {
             attachments: attachments,
             attachmentDecryptionFailures: nil,
             fields: fields,
+            partial: Bool = false,
             passwordHistory: passwordHistory,
             creationDate: creationDate,
             deletedDate: deletedDate,
             revisionDate: revisionDate,
             archivedDate: archivedDate,
+            partial: partial,
         )
     }
 
@@ -174,6 +180,7 @@ extension CipherView {
         notes: String? = nil,
         organizationId: String? = nil,
         organizationUseTotp: Bool = false,
+        partial: Bool = false,
         passwordHistory: [PasswordHistoryView]? = nil,
         permissions: CipherPermissions? = nil,
         reprompt: BitwardenSdk.CipherRepromptType = .none,
@@ -207,11 +214,13 @@ extension CipherView {
             attachments: attachments,
             attachmentDecryptionFailures: nil,
             fields: fields,
+            partial: Bool = false,
             passwordHistory: passwordHistory,
             creationDate: creationDate,
             deletedDate: deletedDate,
             revisionDate: revisionDate,
             archivedDate: archivedDate,
+            partial: partial,
         )
     }
 
@@ -233,6 +242,7 @@ extension CipherView {
         notes: String? = nil,
         organizationId: String? = nil,
         organizationUseTotp: Bool = false,
+        partial: Bool = false,
         passwordHistory: [PasswordHistoryView]? = nil,
         permissions: CipherPermissions? = nil,
         reprompt: BitwardenSdk.CipherRepromptType = .none,
@@ -266,11 +276,13 @@ extension CipherView {
             attachments: attachments,
             attachmentDecryptionFailures: nil,
             fields: fields,
+            partial: Bool = false,
             passwordHistory: passwordHistory,
             creationDate: creationDate,
             deletedDate: deletedDate,
             revisionDate: revisionDate,
             archivedDate: archivedDate,
+            partial: partial,
         )
     }
 
@@ -532,7 +544,7 @@ extension BitwardenSdk.Login {
 extension BitwardenSdk.LoginView {
     static func fixture(
         aliasReference: String? = nil,
-        fido2Credentials: [Fido2Credential]? = nil,
+        fido2Credentials: [Fido2CredentialView]? = nil,
         password: String? = nil,
         passwordRevisionDate: DateTime? = nil,
         uris: [LoginUriView]? = nil,

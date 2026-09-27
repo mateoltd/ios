@@ -570,11 +570,10 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
 
     private func reconcileEmailAliases() async throws {
         if let target = state.boundAlias {
-            let alias: EmailAliasResult
-            if let current = state.emailAliasResult {
-                alias = current
+            let alias: EmailAliasResult = if let current = state.emailAliasResult {
+                current
             } else {
-                alias = try await services.generatorRepository.loadBoundEmailAlias(target)
+                try await services.generatorRepository.loadBoundEmailAlias(target)
             }
             let updated = try await services.generatorRepository.refreshEmailAlias(alias)
             try Task.checkCancellation()
@@ -628,7 +627,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         guard let alias = state.emailAliasResult, let owner = alias.ownerUserId else { return }
         let generation = emailAliasStateGeneration
         Task {
-            guard (try? await services.stateService.getActiveAccountId()) == owner,
+            guard await (try? services.stateService.getActiveAccountId()) == owner,
                   await !services.vaultTimeoutService.isLocked(userId: owner),
                   generation == emailAliasStateGeneration, state.emailAliasResult == alias else { return }
             operation(alias)
@@ -643,7 +642,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         else { return }
         let generation = emailAliasStateGeneration
         Task {
-            guard (try? await services.stateService.getActiveAccountId()) == owner,
+            guard await (try? services.stateService.getActiveAccountId()) == owner,
                   await !services.vaultTimeoutService.isLocked(userId: owner),
                   generation == emailAliasStateGeneration, state.emailAliasResult == alias,
                   state.aliasContacts.contains(contact) else { return }

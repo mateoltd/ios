@@ -78,6 +78,7 @@ extension CipherView {
             deletedDate: nil,
             revisionDate: creationDate,
             archivedDate: nil,
+            partial: false, // Newly created local cipher; not a server-restricted view.
         )
     }
 }

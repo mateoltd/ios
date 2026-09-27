@@ -34,6 +34,14 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
 
     // MARK: Tests
 
+    /// Updating a restricted view must not turn it into a full, encryptable view.
+    func test_update_preservesPartialRestriction() {
+        let restricted = CipherView.fixture(partial: true)
+        XCTAssertTrue(restricted.update(folderId: "folder").partial)
+        XCTAssertTrue(restricted.update(collectionIds: ["collection"]).partial)
+        XCTAssertTrue(CipherItemState(cloneItem: restricted, hasPremium: true).newCipherView().partial)
+    }
+
     /// `loginItemState()` doesn't exclude the FIDO2 credential when `excludeFido2Credentials` is false.
     func test_loginItemState_excludeFido2Credential_false() {
         let cipherView = CipherView.fixture(
@@ -67,7 +75,7 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
 
     /// Updating a login with an alias binding preserves every FIDO2 credential field exactly.
     func test_loginViewUpdate_preservesAliasAndFido2Credentials() {
-        let credential = Fido2Credential.fixture(
+        let credential = Fido2CredentialView.fixture(
             counter: "7",
             credentialId: "credential-id",
             discoverable: "true",
@@ -139,6 +147,7 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
             deletedDate: cipherView.deletedDate,
             revisionDate: cipherView.revisionDate,
             archivedDate: cipherView.archivedDate,
+            partial: cipherView.partial,
         )
 
         let state = withLicense.driversLicenseItemState()

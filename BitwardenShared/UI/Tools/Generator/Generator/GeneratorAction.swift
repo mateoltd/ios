@@ -102,12 +102,11 @@ extension GeneratorAction {
         case let .textFieldFocusChanged(keyPath):
             // Only generate a new value when focus leaves the field (keyPath == nil).
             keyPath == nil
-        case .aliasRecipientChanged,
-             .aliasContacts,
-             .copyAliasContact,
-             .composeAliasContact,
-             .selectRecoveredAlias,
+        case .aliasContacts,
+             .aliasRecipientChanged,
              .clearUrl,
+             .composeAliasContact,
+             .copyAliasContact,
              .copyGeneratedValue,
              .deleteEmailAlias,
              .dismissPressed,
@@ -116,6 +115,7 @@ extension GeneratorAction {
              .guidedTourViewAction,
              .learnMoreAboutPremium,
              .reconcileEmailAliases,
+             .selectRecoveredAlias,
              .showPasswordHistory,
              .sliderEditingChanged,
              .textFieldIsPasswordVisibleChanged,

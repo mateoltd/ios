@@ -172,13 +172,13 @@ class DefaultVaultListPreparedDataBuilder: VaultListPreparedDataBuilder { // swi
             }
             let cipherView = try await clientService.vault().ciphers().decrypt(cipher: cipherRaw)
 
-            let decryptedFido2Credentials = try await clientService
+            let autofillCredentials = try await clientService
                 .platform()
                 .fido2()
-                .decryptFido2AutofillCredentials(cipherView: cipherView)
+                .getFido2AutofillCredentials(cipherView: cipherView)
 
-            guard let fido2CredentialAutofillView = decryptedFido2Credentials.first else {
-                errorReporter.log(error: Fido2Error.decryptFido2AutofillCredentialsEmpty)
+            guard let fido2CredentialAutofillView = autofillCredentials.first else {
+                errorReporter.log(error: Fido2Error.getFido2AutofillCredentialsEmpty)
                 return self
             }
 

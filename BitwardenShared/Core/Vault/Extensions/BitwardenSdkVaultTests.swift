@@ -29,6 +29,22 @@ class BitwardenSdkVaultBitwardenCipherTypeTests: BitwardenTestCase {
 // MARK: - Cipher
 
 class BitwardenSdkVaultCipherTests: BitwardenTestCase {
+    /// Restricted envelopes survive persistence and cipher copies instead of becoming full ciphers.
+    func test_partialEnvelope_roundTripAndUpdates() throws {
+        let envelope = #"{"name":"2.encrypted-name"}"#
+        let response = CipherDetailsResponseModel.fixture(id: "1", partialData: envelope)
+        let cipher = Cipher(responseModel: response)
+        let persisted = try CipherDetailsResponseModel(cipher: cipher)
+        let reopened = try JSONDecoder().decode(
+            CipherDetailsResponseModel.self,
+            from: JSONEncoder().encode(persisted),
+        )
+        XCTAssertEqual(Cipher(responseModel: reopened).partialData, envelope)
+        XCTAssertEqual(cipher.update(folderId: "folder").partialData, envelope)
+        XCTAssertEqual(cipher.update(attachments: [], revisionDate: Date()).partialData, envelope)
+        XCTAssertTrue(CipherListView(cipherDecryptFailure: cipher).partial)
+    }
+
     // MARK: Tests
 
     /// `init(responseModel:)` inits the correct Cipher from CipherDetailsResponseModel with `.sshKey` type.
@@ -454,6 +470,7 @@ class CipherViewTests: BitwardenTestCase {
                 deletedDate: nil,
                 revisionDate: timeProvider.presentTime,
                 archivedDate: nil,
+                partial: false,
             ),
         )
     }
@@ -509,6 +526,7 @@ class CipherViewTests: BitwardenTestCase {
                 deletedDate: nil,
                 revisionDate: timeProvider.presentTime,
                 archivedDate: nil,
+                partial: false,
             ),
         )
     }

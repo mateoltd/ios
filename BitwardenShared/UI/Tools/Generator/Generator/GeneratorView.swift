@@ -166,13 +166,7 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
                         .accessibilityIdentifier("PasswordGeneratorPolicyInEffectLabel")
                 }
 
-                if store.state.boundAlias == nil {
-                    ForEach(store.state.formSections) { section in
-                        sectionView(section, geometryProxy: geometry)
-                    }
-                } else if let alias = store.state.emailAliasResult {
-                    ContentBlock { Text(alias.address).styleGuide(.body).padding(16) }
-                }
+                generatorFields(geometry: geometry)
                 if store.state.isSimpleLoginAlias { emailAliasRecoveryView }
 
                 if store.state.isSimpleLoginAlias,
@@ -181,6 +175,18 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
                 }
             }
             .padding(12)
+        }
+    }
+
+    /// Displays the generator form or the address of the saved alias being managed.
+    @ViewBuilder
+    func generatorFields(geometry: GeometryProxy) -> some View {
+        if store.state.boundAlias == nil {
+            ForEach(store.state.formSections) { section in
+                sectionView(section, geometryProxy: geometry)
+            }
+        } else if let alias = store.state.emailAliasResult {
+            ContentBlock { Text(alias.address).styleGuide(.body).padding(16) }
         }
     }
 

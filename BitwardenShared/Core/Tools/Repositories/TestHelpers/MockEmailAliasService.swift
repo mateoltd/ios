@@ -10,6 +10,19 @@ final class MockEmailAliasService: EmailAliasService {
     var contactOperation: EmailAliasContactOperation?
     var boundTarget: BoundEmailAlias?
 
+    var cancelAndClearCalled = false
+    var createAliasCallCount = 0
+    var createAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var deleteAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var loadProfileResult: Result<EmailAliasProfile?, Error> = .success(nil)
+    var reconcileResult: Result<EmailAliasResult?, Error> = .success(nil)
+    var setEnabledResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+
+    private(set) var baseUrl: String?
+    private(set) var enabled: Bool?
+    private(set) var hostname: String?
+    private(set) var token: String?
+
     func loadBoundAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
         boundTarget = target
         return try boundAliasResult.get()
@@ -30,19 +43,6 @@ final class MockEmailAliasService: EmailAliasService {
         contactOperation = operation
         return try contactsResult.get()
     }
-
-    var cancelAndClearCalled = false
-    var createAliasCallCount = 0
-    var createAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
-    var deleteAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
-    var loadProfileResult: Result<EmailAliasProfile?, Error> = .success(nil)
-    var reconcileResult: Result<EmailAliasResult?, Error> = .success(nil)
-    var setEnabledResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
-
-    private(set) var baseUrl: String?
-    private(set) var enabled: Bool?
-    private(set) var hostname: String?
-    private(set) var token: String?
 
     func loadProfile(baseUrl: String) async throws -> EmailAliasProfile? {
         self.baseUrl = baseUrl

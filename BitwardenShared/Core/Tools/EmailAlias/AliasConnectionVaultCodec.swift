@@ -386,6 +386,7 @@ enum AliasConnectionVaultCodec {
             deletedDate: nil,
             revisionDate: date,
             archivedDate: nil,
+            partial: false, // Newly created local cipher; not a server-restricted view.
         )
     }
 

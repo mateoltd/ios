@@ -8,13 +8,15 @@ public class MockVaultClientService: VaultClientService {
     public var clientCiphers: MockCiphersClientProtocol = {
         let mock = MockCiphersClientProtocol()
         mock.decryptClosure = { CipherView(cipher: $0) }
-        mock.decryptFido2CredentialsReturnValue = []
         mock.decryptListClosure = { $0.map { CipherListView(cipher: $0) } }
         mock.decryptListWithFailuresClosure = { ciphers in
             DecryptCipherListResult(successes: ciphers.map { CipherListView(cipher: $0) }, failures: [])
         }
         mock.encryptClosure = { cipherView in
-            EncryptionContext(encryptedFor: "1", cipher: Cipher(cipherView: cipherView))
+            guard !cipherView.partial else {
+                throw NSError(domain: "MockVaultClientService.RestrictedCipher", code: 1)
+            }
+            return EncryptionContext(encryptedFor: "1", cipher: Cipher(cipherView: cipherView))
         }
         mock.prepareCiphersForBulkShareReturnValue = []
         return mock

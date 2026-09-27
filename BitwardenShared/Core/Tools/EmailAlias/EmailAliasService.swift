@@ -139,8 +139,8 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             baseUrl: state.credential.baseUrl,
             connectionId: state.connection.connectionId,
             cachedAlias: cachedAlias(in: state.journal, excluding: used, userId: context.userId),
-            recoveryNeeded: reduceAliasJournal(journal: state.journal).operations.contains {
-                $0.operation == .create && ($0.phase == .dispatched || $0.phase == .outcomeUnknown)
+            recoveryNeeded: reduceAliasJournal(journal: state.journal).operations.contains { operation in
+                operation.operation == .create && (operation.phase == .dispatched || operation.phase == .outcomeUnknown)
             },
         )
     }
@@ -210,8 +210,13 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         } catch AliasError.NotFound {
             try await validate(context)
             try await appendAndPersist(
-                operationId: UUID().uuidString.lowercased(), operation: .get, phase: .acknowledged,
-                target: alias.identity, lifecycle: .deleted, state: &state, context: context,
+                operationId: UUID().uuidString.lowercased(),
+                operation: .get,
+                phase: .acknowledged,
+                target: alias.identity,
+                lifecycle: .deleted,
+                state: &state,
+                context: context,
             )
             var deleted = alias
             deleted.status = .deleted
@@ -221,8 +226,13 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         try await validate(context)
         guard observed.identity == alias.identity else { throw EmailAliasError.conflict }
         try await appendAndPersist(
-            operationId: UUID().uuidString.lowercased(), operation: .get, phase: .acknowledged,
-            target: observed.identity, lifecycle: observed.lifecycle, state: &state, context: context,
+            operationId: UUID().uuidString.lowercased(),
+            operation: .get,
+            phase: .acknowledged,
+            target: observed.identity,
+            lifecycle: observed.lifecycle,
+            state: &state,
+            context: context,
         )
         return try result(observed, userId: context.userId)
     }
@@ -268,9 +278,9 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             }
             let reduced = try reduceAliasJournal(journal: state.journal)
             guard reduced.conflicts.isEmpty else { throw EmailAliasError.conflict }
-            guard !reduced.operations.contains(where: {
-                $0.operation == .createSendReplyIdentity && $0.target == alias.identity
-                    && ($0.phase == .dispatched || $0.phase == .outcomeUnknown)
+            guard !reduced.operations.contains(where: { operation in
+                operation.operation == .createSendReplyIdentity && operation.target == alias.identity
+                    && (operation.phase == .dispatched || operation.phase == .outcomeUnknown)
             }) else { throw EmailAliasError.operationOutcomeUnknown }
             kind = .createSendReplyIdentity
         case let .remove(contact), let .setBlocked(contact, _):
@@ -297,8 +307,12 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             try await validate(context)
             do {
                 try await appendAndPersist(
-                    operationId: operationId, operation: kind, phase: .acknowledged,
-                    target: alias.identity, state: &state, context: context,
+                    operationId: operationId,
+                    operation: kind,
+                    phase: .acknowledged,
+                    target: alias.identity,
+                    state: &state,
+                    context: context,
                 )
             } catch {
                 try await validate(context)
@@ -311,7 +325,8 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             try await validate(context)
             try? await recordFailure(
                 FailureRecord(error: error, operationId: operationId, operation: kind, target: alias.identity),
-                state: &state, context: context,
+                state: &state,
+                context: context,
             )
             throw map(error)
         }
@@ -614,8 +629,8 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             )
             let used = try await boundAliases(context: context)
             try await validate(context)
-            return try aliases.filter { !used.contains($0.identity) }.map {
-                try result($0, userId: context.userId)
+            return try aliases.filter { !used.contains($0.identity) }.map { alias in
+                try result(alias, userId: context.userId)
             }
         } catch is CancellationError {
             throw CancellationError()

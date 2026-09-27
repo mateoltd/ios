@@ -709,7 +709,7 @@ private extension ViewItemProcessor {
 
                 // Carry over any toast, so that a toast shown in response to saving the item isn't
                 // cleared out from under the user by the cipher update that the save triggers.
-                guard (try await services.stateService.getActiveAccountId()) == ownerUserId else { return }
+                guard try await (services.stateService.getActiveAccountId()) == ownerUserId else { return }
                 newState.ownerUserId = ownerUserId
                 newState.toast = state.toast
                 state = newState

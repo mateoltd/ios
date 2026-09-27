@@ -235,7 +235,6 @@ class MockGeneratorCoordinatorDelegate: GeneratorCoordinatorDelegate {
     }
 }
 
-
 extension GeneratorCoordinatorTests {
     @MainActor
     func test_navigateTo_manageEmailAlias_preservesSavedTarget() throws {

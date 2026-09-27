@@ -137,6 +137,7 @@ extension CipherDetailsResponseModel {
             notes: cipher.notes,
             organizationId: cipher.organizationId,
             organizationUseTotp: cipher.organizationUseTotp,
+            partialData: cipher.partialData,
             passport: cipher.passport.map(CipherPassportModel.init),
             passwordHistory: cipher.passwordHistory?.map(CipherPasswordHistoryModel.init),
             permissions: CipherPermissionsModel(cipherPermissions: cipher.permissions),
@@ -487,6 +488,7 @@ extension BitwardenSdk.Cipher {
             revisionDate: model.revisionDate,
             archivedDate: model.archivedDate,
             data: model.data,
+            partialData: model.partialData,
         )
     }
 
@@ -535,6 +537,7 @@ extension BitwardenSdk.Cipher {
             revisionDate: model.revisionDate,
             archivedDate: model.archivedDate,
             data: model.data,
+            partialData: model.partialData,
         )
     }
 }
@@ -637,6 +640,7 @@ extension BitwardenSdk.CipherView: @retroactive Identifiable, Fido2UserVerifiabl
             deletedDate: nil,
             revisionDate: timeProvider.presentTime,
             archivedDate: nil,
+            partial: false, // Newly created local cipher; not a server-restricted view.
         )
     }
 }
@@ -804,7 +808,7 @@ extension BitwardenSdk.LoginView {
         uris: [LoginUriView]?,
         totp: String?,
         autofillOnPageLoad: Bool?,
-        fido2Credentials: [Fido2Credential]?,
+        fido2Credentials: [Fido2CredentialView]?,
     ) {
         self.init(
             username: username,
@@ -1004,4 +1008,8 @@ extension BitwardenSdk.FolderView: @retroactive Menuable, @unchecked @retroactiv
     public var localizedName: String {
         name
     }
+}
+
+extension BitwardenSdk.Fido2CredentialView: @retroactive Identifiable {
+    public var id: String { credentialId }
 }

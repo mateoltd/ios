@@ -145,7 +145,7 @@ class VaultItemCoordinator: NSObject, Coordinator, HasStackNavigator { // swiftl
                 )
                 await reprompt.repromptForMasterPasswordIfNeeded(cipherId: cipherId) { [weak self] in
                     guard let self,
-                          (try? await services.stateService.getActiveAccountId()) == userId,
+                          await (try? services.stateService.getActiveAccountId()) == userId,
                           await !services.vaultTimeoutService.isLocked(userId: userId) else { return }
                     let navigationController = module.makeNavigationController()
                     let coordinator = module.makeGeneratorCoordinator(

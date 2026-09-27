@@ -11,27 +11,6 @@ class MockGeneratorRepository: GeneratorRepository {
     var contactOperation: EmailAliasContactOperation?
     var boundTarget: BoundEmailAlias?
 
-    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
-        boundTarget = target
-        return try boundAliasResult.get()
-    }
-
-    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
-        try refreshedAliasResult.get()
-    }
-
-    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult] {
-        try recoveredAliasesResult.get()
-    }
-
-    func emailAliasContacts(
-        _ alias: EmailAliasResult,
-        operation: EmailAliasContactOperation,
-    ) async throws -> [SendReplyIdentity] {
-        contactOperation = operation
-        return try contactsResult.get()
-    }
-
     var addPasswordHistoryCalled = false
 
     var clearPasswordHistoryCalled = false
@@ -102,6 +81,27 @@ class MockGeneratorRepository: GeneratorRepository {
     var usernamePlusAddressEmailResult: Result<String, Error> = .success("user+abcd0123@bitwarden.com")
 
     // MARK: Password History
+
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        boundTarget = target
+        return try boundAliasResult.get()
+    }
+
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try refreshedAliasResult.get()
+    }
+
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult] {
+        try recoveredAliasesResult.get()
+    }
+
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        contactOperation = operation
+        return try contactsResult.get()
+    }
 
     func addPasswordHistory(_ passwordHistory: PasswordHistoryView) async throws {
         addPasswordHistoryCalled = true
