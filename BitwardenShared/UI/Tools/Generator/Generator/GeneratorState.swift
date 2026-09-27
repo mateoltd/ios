@@ -1,5 +1,6 @@
 import BitwardenKit
 import BitwardenResources
+import BitwardenSdk
 import Foundation
 
 // swiftlint:disable file_length
@@ -139,6 +140,16 @@ struct GeneratorState: Equatable {
 
     /// Provider lifecycle state for a generated or locally cached email alias.
     var emailAliasResult: EmailAliasResult?
+
+    /// A saved login being managed, rather than a new username being generated.
+    var boundAlias: BoundEmailAlias?
+    var aliasContacts = [SendReplyIdentity]()
+    var aliasRecipient = ""
+    var recoveredAliases = [EmailAliasResult]()
+    var aliasRecoveryNeeded = false
+    var isAliasBusy = false
+    var boundAliasSessionEnded = false
+    var aliasContactRecoveryNeeded = false
 
     /// The state of the guided tour view.
     var guidedTourViewState = GuidedTourViewState(

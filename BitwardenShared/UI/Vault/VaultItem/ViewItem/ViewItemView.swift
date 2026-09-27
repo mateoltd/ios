@@ -83,6 +83,10 @@ struct ViewItemView: View {
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if store.state.boundEmailAlias != nil {
+                    Button(Localizations.manageEmailAlias) { store.send(.manageEmailAlias) }
+                        .accessibilityIdentifier("ManageEmailAliasButton")
+                }
                 VaultItemManagementMenuView(
                     isArchiveEnabled: isArchiveEnabled,
                     isCloneEnabled: store.state.canClone,

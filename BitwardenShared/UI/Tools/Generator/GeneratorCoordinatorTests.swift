@@ -234,3 +234,16 @@ class MockGeneratorCoordinatorDelegate: GeneratorCoordinatorDelegate {
         didCreateEmailAliasReference = reference
     }
 }
+
+
+extension GeneratorCoordinatorTests {
+    @MainActor
+    func test_navigateTo_manageEmailAlias_preservesSavedTarget() throws {
+        subject.navigate(to: .manageEmailAlias(cipherId: "saved", userId: "1", reference: "reference"))
+        let action = try XCTUnwrap(stackNavigator.actions.last)
+        let store = try XCTUnwrap((action.view as? GeneratorView)?.store)
+        XCTAssertEqual(store.state.boundAlias, BoundEmailAlias(cipherId: "saved", userId: "1", reference: "reference"))
+        XCTAssertEqual(store.state.presentationMode, .inPlace)
+        XCTAssertFalse(store.state.savePasswordHistory)
+    }
+}

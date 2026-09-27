@@ -107,6 +107,16 @@ final class GeneratorCoordinator: Coordinator, HasStackNavigator {
                 passwordRules: passwordRules,
                 savePasswordHistory: savePasswordHistory,
             )
+        case let .manageEmailAlias(cipherId, userId, reference):
+            let state = GeneratorState(
+                generatorType: .username,
+                boundAlias: BoundEmailAlias(cipherId: cipherId, userId: userId, reference: reference),
+                presentationMode: .inPlace,
+                savePasswordHistory: false,
+                usernameState: .init(usernameGeneratorType: .forwardedEmail, forwardedEmailService: .simpleLogin),
+            )
+            let processor = GeneratorProcessor(coordinator: asAnyCoordinator(), services: services, state: state)
+            stackNavigator?.replace(GeneratorView(store: Store(processor: processor)))
         case .generatorHistory:
             showGeneratorHistory()
         }

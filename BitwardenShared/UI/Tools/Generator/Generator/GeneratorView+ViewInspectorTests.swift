@@ -56,6 +56,18 @@ class GeneratorViewTests: BitwardenTestCase {
         subject = nil
     }
 
+    /// Recovery is reachable even when uncertain creation returned no address.
+    @MainActor
+    func test_recoveryButtonWithoutAlias_tap() throws {
+        processor.state.generatorType = .username
+        processor.state.usernameState.usernameGeneratorType = .forwardedEmail
+        processor.state.usernameState.forwardedEmailService = .simpleLogin
+        processor.state.aliasRecoveryNeeded = true
+        let button = try subject.inspect().find(button: Localizations.reconcileEmailAliases)
+        try button.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .reconcileEmailAliases)
+    }
+
     // MARK: Tests
 
     /// Tapping on the dismiss button dispatches the `.dismissPressed` action.

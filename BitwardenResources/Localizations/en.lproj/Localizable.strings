@@ -1316,3 +1316,20 @@
 "NotNow" = "Not now";
 "SyncUnsuccessful" = "Sync unsuccessful";
 "WeCouldntSyncYourVaultWithTheServerDescriptionLong" = "We couldn’t sync your vault with the server. Your vault may not reflect your latest changes. You can try again now or it will sync automatically later.";
+
+/* Alias management and recovery */
+"ManageEmailAlias" = "Manage email alias";
+"AliasRecipient" = "Recipient email";
+"CreateAliasContact" = "Create reverse alias";
+"RefreshAliasContacts" = "Refresh contacts";
+"CopyReverseAlias" = "Copy reverse alias";
+"ComposeWithAlias" = "Open mail app";
+"BlockAliasContact" = "Block contact";
+"UnblockAliasContact" = "Unblock contact";
+"RemoveAliasContact" = "Delete contact";
+"AliasDestructiveConfirmation" = "This permanently removes the provider resource. Messages using it may no longer be delivered. Your saved login will remain in your vault.";
+"AliasMailClientInstructions" = "Create or select a contact, then send to its reverse alias from your forwarding mailbox using your mail app. Reply to forwarded messages in that same mailbox.";
+"AliasRecoveryInstructions" = "A request may have succeeded. Sync and review existing aliases below, then select the address you want to use. New creation stays blocked until the uncertain request can be verified. Do not reconnect or repeat creation to work around this.";
+"AliasJournalRecovery" = "The provider accepted the change, but its vault acknowledgement could not be saved. Keep this address and sync to recover its current state before creating another alias.";
+"AliasSessionEnded" = "Close this screen and reopen the saved login after unlocking to manage its alias.";
+"AliasContactRecovery" = "A contact request may have succeeded. Refresh contacts and use its existing reverse alias. Do not repeat creation if the contact is missing; the provider must verify the uncertain request first.";

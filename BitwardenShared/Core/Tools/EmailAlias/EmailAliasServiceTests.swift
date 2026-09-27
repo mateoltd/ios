@@ -331,7 +331,7 @@ final class EmailAliasServiceTests: BitwardenTestCase {
     func test_loadBoundAlias_resolvesSavedBindingWithoutProvider() async throws {
         let alias = try aliasResult()
         let login = CipherView.fixture(
-            id: "saved-login", login: .fixture(username: alias.address, aliasReference: alias.reference),
+            id: "saved-login", login: .fixture(aliasReference: alias.reference, username: alias.address),
         )
         cipherService.fetchAllCiphersResult = try .success([
             Cipher(cipherView: carrier(observedAlias: true)), Cipher(cipherView: login),
@@ -351,7 +351,7 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         cipherService.fetchAllCiphersResult = try .success([
             Cipher(cipherView: carrier(observedAlias: true)),
             Cipher(cipherView: .fixture(
-                id: "saved-login", login: .fixture(username: "changed@example.com", aliasReference: alias.reference),
+                id: "saved-login", login: .fixture(aliasReference: alias.reference, username: "changed@example.com"),
             )),
         ])
         for owner in ["account-2", "account-1"] {
@@ -375,6 +375,24 @@ final class EmailAliasServiceTests: BitwardenTestCase {
             XCTFail("A stale result was accepted")
         } catch { XCTAssertEqual(error as? EmailAliasError, .accountChanged) }
         XCTAssertEqual(fakeClient.providerCallCount, 0)
+    }
+
+    /// Sync delivers the connection root to a fresh local vault before provider-list recovery.
+    func test_recovery_loadsConnectionFromSyncIntoFreshVault() async throws {
+        let encryptedCarrier = try Cipher(cipherView: carrier(observedAlias: true))
+        cipherService.fetchAllCiphersResult = .success([])
+        let before = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
+        XCTAssertNil(before)
+        syncService.fetchSyncHandler = { [cipherService] in
+            cipherService?.fetchAllCiphersResult = .success([encryptedCarrier])
+        }
+        let aliases = try await subject.recoverAliases(baseUrl: "https://app.simplelogin.io/")
+        let recovered = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
+        XCTAssertEqual(syncService.fetchSyncForceSync, true)
+        XCTAssertEqual(recovered?.connectionId, connectionId)
+        XCTAssertEqual(recovered?.token, "encrypted-provider-token")
+        XCTAssertEqual(aliases.first?.identity.connectionId, connectionId)
+        XCTAssertEqual(fakeClient.createCallCount, 0)
     }
 
     /// A new process recovers credentials/journal from encrypted sync carriers, not ordinary exports.
@@ -541,7 +559,10 @@ private final class FakeAliasClient: AliasClient, @unchecked Sendable {
         return aliasFixture()
     }
 
-    override func listSendReplyIdentities(alias: AliasIdentity, pageToken: String?) async throws -> SendReplyIdentityPage {
+    override func listSendReplyIdentities(
+        alias: AliasIdentity,
+        pageToken: String?,
+    ) async throws -> SendReplyIdentityPage {
         providerCallCount += 1
         return SendReplyIdentityPage(identities: contactIdentities, nextPageToken: nil)
     }

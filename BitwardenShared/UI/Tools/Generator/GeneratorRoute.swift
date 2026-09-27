@@ -28,4 +28,7 @@ public enum GeneratorRoute: Equatable, Hashable {
 
     /// A route to the generator history screen.
     case generatorHistory
+
+    /// Manages an existing personal login after the item reprompt.
+    case manageEmailAlias(cipherId: String, userId: String, reference: String)
 }

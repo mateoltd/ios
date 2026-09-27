@@ -1,10 +1,17 @@
 import BitwardenKit
+import BitwardenSdk
 
 /// Actions that can be processed by a `GeneratorProcessor`.
 ///
 enum GeneratorAction: Equatable {
     /// Clears the URL after it has been opened.
     case clearUrl
+
+    case aliasRecipientChanged(String)
+    case aliasContacts(EmailAliasContactOperation)
+    case copyAliasContact(SendReplyIdentity)
+    case composeAliasContact(SendReplyIdentity)
+    case selectRecoveredAlias(EmailAliasResult)
 
     /// The copy generated value button was pressed.
     case copyGeneratedValue
@@ -95,7 +102,12 @@ extension GeneratorAction {
         case let .textFieldFocusChanged(keyPath):
             // Only generate a new value when focus leaves the field (keyPath == nil).
             keyPath == nil
-        case .clearUrl,
+        case .aliasRecipientChanged,
+             .aliasContacts,
+             .copyAliasContact,
+             .composeAliasContact,
+             .selectRecoveredAlias,
+             .clearUrl,
              .copyGeneratedValue,
              .deleteEmailAlias,
              .dismissPressed,

@@ -245,6 +245,7 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
 
     // Contact mutations use the same encrypted dispatch barrier as alias creation. A subsequent
     // list may recover the result, but cannot prove that an absent contact was never created.
+    // swiftlint:disable:next function_body_length
     private func performContacts(
         _ alias: EmailAliasResult,
         operation: EmailAliasContactOperation,
@@ -405,7 +406,9 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
             // write may reuse only a previously observed and currently unbound resource.
             state.journal = originalJournal
             let used = try await boundAliases(context: context)
-            if let cached = try cachedAlias(in: state.journal, excluding: used, userId: context.userId) { return cached }
+            if let cached = try cachedAlias(in: state.journal, excluding: used, userId: context.userId) {
+                return cached
+            }
             throw error
         }
 

@@ -32,6 +32,7 @@ class VaultItemCoordinator: NSObject, Coordinator, HasStackNavigator { // swiftl
         & HasErrorAlertServices.ErrorAlertServices
         & HasEventService
         & HasFido2UserInterfaceHelper
+        & HasLocalAuthService
         & HasRehydrationHelper
         & HasSettingsRepository
         & HasStateService
@@ -129,6 +130,33 @@ class VaultItemCoordinator: NSObject, Coordinator, HasStackNavigator { // swiftl
         case let .fileSelection(route):
             guard let delegate = context as? FileSelectionDelegate else { return }
             showFileSelection(route: route, delegate: delegate)
+        case let .manageEmailAlias(cipherId, userId, reference):
+            Task {
+                guard try await services.stateService.getActiveAccountId() == userId,
+                      await !services.vaultTimeoutService.isLocked(userId: userId) else { return }
+                let verification = DefaultUserVerificationHelper(
+                    authRepository: services.authRepository,
+                    errorReporter: services.errorReporter,
+                    localAuthService: services.localAuthService,
+                )
+                verification.userVerificationDelegate = self
+                let reprompt = DefaultMasterPasswordRepromptHelper(
+                    coordinator: asAnyCoordinator(), services: services, userVerificationHelper: verification,
+                )
+                await reprompt.repromptForMasterPasswordIfNeeded(cipherId: cipherId) { [weak self] in
+                    guard let self,
+                          (try? await services.stateService.getActiveAccountId()) == userId,
+                          await !services.vaultTimeoutService.isLocked(userId: userId) else { return }
+                    let navigationController = module.makeNavigationController()
+                    let coordinator = module.makeGeneratorCoordinator(
+                        delegate: nil, stackNavigator: navigationController,
+                    ).asAnyCoordinator()
+                    coordinator.navigate(to: .manageEmailAlias(
+                        cipherId: cipherId, userId: userId, reference: reference,
+                    ))
+                    stackNavigator?.present(navigationController)
+                }
+            }
         case let .generator(type, emailWebsite):
             guard let delegate = context as? GeneratorCoordinatorDelegate else { return }
             showGenerator(for: type, emailWebsite: emailWebsite, delegate: delegate)
@@ -500,3 +528,7 @@ class VaultItemCoordinator: NSObject, Coordinator, HasStackNavigator { // swiftl
 extension VaultItemCoordinator: HasErrorAlertServices {
     var errorAlertServices: ErrorAlertServices { services }
 }
+
+// MARK: - UserVerificationDelegate
+
+extension VaultItemCoordinator: UserVerificationDelegate {}

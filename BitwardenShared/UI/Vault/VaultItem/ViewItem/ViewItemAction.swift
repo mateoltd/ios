@@ -6,6 +6,9 @@ import BitwardenResources
 
 /// Actions that can be processed by a `ViewItemProcessor`.
 enum ViewItemAction: Equatable, Sendable {
+    /// Manage the saved alias after account and reprompt validation.
+    case manageEmailAlias
+
     /// A bank account item action.
     case bankAccountItemAction(ViewBankAccountItemAction)
 
