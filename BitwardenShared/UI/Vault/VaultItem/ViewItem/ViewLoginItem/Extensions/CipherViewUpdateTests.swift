@@ -34,6 +34,14 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
 
     // MARK: Tests
 
+    /// Updating a restricted view must not turn it into a full, encryptable view.
+    func test_update_preservesPartialRestriction() {
+        let restricted = CipherView.fixture(partial: true)
+        XCTAssertTrue(restricted.update(folderId: "folder").partial)
+        XCTAssertTrue(restricted.update(collectionIds: ["collection"]).partial)
+        XCTAssertTrue(CipherItemState(cloneItem: restricted, hasPremium: true).newCipherView().partial)
+    }
+
     /// `loginItemState()` doesn't exclude the FIDO2 credential when `excludeFido2Credentials` is false.
     func test_loginItemState_excludeFido2Credential_false() {
         let cipherView = CipherView.fixture(
@@ -63,6 +71,32 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
 
         let loginItemState = cipherView.loginItemState(excludeFido2Credentials: true, showTOTP: false)
         XCTAssertTrue(loginItemState.fido2Credentials.isEmpty)
+    }
+
+    /// Updating a login with an alias binding preserves every FIDO2 credential field exactly.
+    func test_loginViewUpdate_preservesAliasAndFido2Credentials() {
+        let credential = Fido2CredentialView.fixture(
+            counter: "7",
+            credentialId: "credential-id",
+            discoverable: "true",
+            keyAlgorithm: "ES256",
+            keyCurve: "P-256",
+            keyType: "public-key",
+            keyValue: "key-value",
+            rpId: "example.com",
+            rpName: "Example",
+            userDisplayName: "User",
+            userHandle: "handle",
+            userName: "user@example.com",
+        )
+        var loginState = LoginItemState(isTOTPAvailable: false, totpState: .none)
+        loginState.aliasReference = "canonical-reference"
+        loginState.fido2Credentials = [credential]
+
+        let updated = LoginView(loginView: .fixture(fido2Credentials: [credential]), loginState: loginState)
+
+        XCTAssertEqual(updated.aliasReference, "canonical-reference")
+        XCTAssertEqual(updated.fido2Credentials, [credential])
     }
 
     /// `driversLicenseItemState()` returns the driver's license item state from the cipher view,
@@ -113,6 +147,7 @@ final class CipherViewUpdateTests: BitwardenTestCase { // swiftlint:disable:this
             deletedDate: cipherView.deletedDate,
             revisionDate: cipherView.revisionDate,
             archivedDate: cipherView.archivedDate,
+            partial: cipherView.partial,
         )
 
         let state = withLicense.driversLicenseItemState()

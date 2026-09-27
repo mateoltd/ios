@@ -9,6 +9,9 @@ import Foundation
 struct LoginItemState: Equatable {
     // MARK: Properties
 
+    /// The canonical SDK reference for the email alias bound to this login.
+    var aliasReference: String?
+
     /// Whether the user has permissions to view the cipher's password.
     var canViewPassword: Bool = true
 
@@ -19,7 +22,7 @@ struct LoginItemState: Equatable {
     var editView: Bool = true
 
     /// The FIDO2 credentials for the login.
-    var fido2Credentials: [Fido2Credential] = []
+    var fido2Credentials: [Fido2CredentialView] = []
 
     /// Whether the auth key is visible.
     var isAuthKeyVisible: Bool = false
@@ -97,6 +100,7 @@ struct LoginItemState: Equatable {
         BitwardenSdk.LoginView(
             username: username.nilIfEmpty,
             password: password.nilIfEmpty,
+            aliasReference: aliasReference,
             passwordRevisionDate: passwordUpdatedDate,
             uris: uris.compactMap(\.loginUriView).nilIfEmpty,
             totp: authenticatorKey.nilIfEmpty,

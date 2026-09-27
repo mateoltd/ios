@@ -49,6 +49,7 @@ extension CipherView {
             login: BitwardenSdk.LoginView(
                 username: username,
                 password: password,
+                aliasReference: nil,
                 passwordRevisionDate: nil,
                 uris: [LoginUriView(uri: uri, match: nil, uriChecksum: nil)],
                 totp: nil,
@@ -77,6 +78,7 @@ extension CipherView {
             deletedDate: nil,
             revisionDate: creationDate,
             archivedDate: nil,
+            partial: false, // Newly created local cipher; not a server-restricted view.
         )
     }
 }

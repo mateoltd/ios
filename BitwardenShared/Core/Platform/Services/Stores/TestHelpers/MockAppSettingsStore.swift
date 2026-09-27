@@ -8,6 +8,8 @@ import Foundation
 // swiftlint:disable file_length
 
 class MockAppSettingsStore: AppSettingsStore { // swiftlint:disable:this type_body_length
+    var migrationGracePeriodStarts = [String: V2EncryptedMigrationsGracePeriodStart]()
+
     var accessTokenExpirationDateByUserId = [String: Date]()
     var accountCryptographicStates = [String: WrappedAccountCryptographicState]()
     var accountSetupAutofill = [String: AccountSetupProgress]()
@@ -448,6 +450,14 @@ class MockAppSettingsStore: AppSettingsStore { // swiftlint:disable:this type_bo
 
     func setUsesKeyConnector(_ usesKeyConnector: Bool, userId: String) {
         self.usesKeyConnector[userId] = usesKeyConnector
+    }
+
+    func setV2EncryptedMigrationsGracePeriodStart(_ start: V2EncryptedMigrationsGracePeriodStart?, userId: String) {
+        migrationGracePeriodStarts[userId] = start
+    }
+
+    func v2EncryptedMigrationsGracePeriodStart(userId: String) -> V2EncryptedMigrationsGracePeriodStart? {
+        migrationGracePeriodStarts[userId]
     }
 
     func setV2UpgradeToken(_ token: V2UpgradeToken?, userId: String) {

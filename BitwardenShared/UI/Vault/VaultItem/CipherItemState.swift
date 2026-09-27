@@ -33,6 +33,9 @@ struct CipherItemState: Equatable { // swiftlint:disable:this type_body_length
 
     // MARK: Properties
 
+    /// Whether the source is a server-restricted view, including when cloning it.
+    private(set) var isPartial = false
+
     /// A flag indicating if this account has Premium features.
     var accountHasPremium: Bool
 
@@ -480,6 +483,7 @@ struct CipherItemState: Equatable { // swiftlint:disable:this type_body_length
             configuration = .existing(cipherView: cipherView)
         }
 
+        isPartial = cipherView.partial
         bankAccountItemState = cipherView.bankAccountItemState()
         cardItemState = cipherView.cardItemState().preservingCardScannerState(from: cardItemState)
         driversLicenseItemState = cipherView.driversLicenseItemState()
@@ -733,6 +737,7 @@ extension CipherItemState {
             deletedDate: nil,
             revisionDate: creationDate,
             archivedDate: nil,
+            partial: isPartial,
         )
     }
 } // swiftlint:disable:this file_length

@@ -1,4 +1,5 @@
 import BitwardenResources
+import BitwardenSdk
 import XCTest
 
 @testable import BitwardenShared
@@ -6,6 +7,34 @@ import XCTest
 // MARK: - ViewItemStateTests
 
 class ViewItemStateTests: BitwardenTestCase {
+    /// Only a matching personal login with a captured account owner exposes alias management.
+    func test_boundEmailAlias_requiresPersonalMatchingBindingAndOwner() throws {
+        let identity = AliasIdentity(
+            version: 1,
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            aliasId: "42",
+            address: "alias@example.com",
+        )
+        let reference = try createAliasReference(identity: identity)
+        let cipher = CipherView.fixture(id: "saved", login: .fixture(
+            aliasReference: reference, username: identity.address,
+        ))
+        var state = try XCTUnwrap(ViewItemState(cipherView: cipher, hasPremium: false, iconBaseURL: nil))
+        XCTAssertNil(state.boundEmailAlias)
+        state.ownerUserId = "1"
+        XCTAssertEqual(state.boundEmailAlias, BoundEmailAlias(cipherId: "saved", userId: "1", reference: reference))
+        let shared = CipherView.fixture(id: "saved", login: cipher.login, organizationId: "organization")
+        state = try XCTUnwrap(ViewItemState(cipherView: shared, hasPremium: false, iconBaseURL: nil))
+        state.ownerUserId = "1"
+        XCTAssertNil(state.boundEmailAlias)
+        let changed = CipherView.fixture(id: "saved", login: .fixture(
+            aliasReference: reference, username: "changed@example.com",
+        ))
+        state = try XCTUnwrap(ViewItemState(cipherView: changed, hasPremium: false, iconBaseURL: nil))
+        state.ownerUserId = "1"
+        XCTAssertNil(state.boundEmailAlias)
+    }
+
     // MARK: Tests
 
     /// `canClone` is true when the cipher belongs to user but not organization.

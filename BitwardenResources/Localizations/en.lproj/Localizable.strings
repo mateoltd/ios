@@ -532,6 +532,23 @@
 "PlusAddressedEmail" = "Plus addressed email";
 "CatchAllEmail" = "Catch-all email";
 "ForwardedEmailAlias" = "Forwarded email alias";
+"EmailAliasCreating" = "Creating email alias";
+"EmailAliasCreated" = "Email alias created";
+"EmailAliasEnabled" = "Email alias enabled";
+"EmailAliasDisabled" = "Email alias disabled";
+"EmailAliasDeleted" = "Email alias deleted";
+"EmailAliasOutcomeUnknown" = "The provider outcome is unknown. Reconcile before trying again.";
+"EmailAliasConflict" = "Email alias state conflicts with another vault session.";
+"EmailAliasLifecycle" = "Email alias controls";
+"EmailAliasStatusEnabled" = "Forwarding is enabled";
+"EmailAliasStatusDisabled" = "Forwarding is disabled";
+"EmailAliasStatusDeleted" = "Alias deleted";
+"EmailAliasStatusUnknown" = "Provider outcome unknown";
+"EmailAliasStatusConflict" = "Alias state conflict";
+"EnableEmailAlias" = "Enable email alias";
+"DisableEmailAlias" = "Disable email alias";
+"DeleteEmailAlias" = "Delete email alias";
+"ReconcileEmailAliases" = "Reconcile email aliases";
 "RandomWord" = "Random word";
 "EmailRequiredParenthesis" = "Email (required)";
 "DomainNameRequiredParenthesis" = "Domain name (required)";
@@ -1299,3 +1316,20 @@
 "NotNow" = "Not now";
 "SyncUnsuccessful" = "Sync unsuccessful";
 "WeCouldntSyncYourVaultWithTheServerDescriptionLong" = "We couldn’t sync your vault with the server. Your vault may not reflect your latest changes. You can try again now or it will sync automatically later.";
+
+/* Alias management and recovery */
+"ManageEmailAlias" = "Manage email alias";
+"AliasRecipient" = "Recipient email";
+"CreateAliasContact" = "Create reverse alias";
+"RefreshAliasContacts" = "Refresh contacts";
+"CopyReverseAlias" = "Copy reverse alias";
+"ComposeWithAlias" = "Open mail app";
+"BlockAliasContact" = "Block contact";
+"UnblockAliasContact" = "Unblock contact";
+"RemoveAliasContact" = "Delete contact";
+"AliasDestructiveConfirmation" = "This permanently removes the provider resource. Messages using it may no longer be delivered. Your saved login will remain in your vault.";
+"AliasMailClientInstructions" = "Create or select a contact, then send to its reverse alias from your forwarding mailbox using your mail app. Reply to forwarded messages in that same mailbox.";
+"AliasRecoveryInstructions" = "A request may have succeeded. Sync and review existing aliases below, then select the address you want to use. New creation stays blocked until the uncertain request can be verified. Do not reconnect or repeat creation to work around this.";
+"AliasJournalRecovery" = "The provider accepted the change, but its vault acknowledgement could not be saved. Keep this address and sync to recover its current state before creating another alias.";
+"AliasSessionEnded" = "Close this screen and reopen the saved login after unlocking to manage its alias.";
+"AliasContactRecovery" = "A contact request may have succeeded. Refresh contacts and use its existing reverse alias. Do not repeat creation if the contact is missing; the provider must verify the uncertain request first.";

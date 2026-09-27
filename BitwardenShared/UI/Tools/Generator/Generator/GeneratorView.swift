@@ -33,8 +33,12 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
             }
             .coordinateSpace(name: "generatorView")
             .background(SharedAsset.Colors.backgroundPrimary.swiftUIColor)
-            .navigationBar(title: Localizations.generator, titleDisplayMode: .inline)
+            .navigationBar(
+                title: store.state.boundAlias == nil ? Localizations.generator : Localizations.manageEmailAlias,
+                titleDisplayMode: .inline,
+            )
             .task { await store.perform(.appeared) }
+            .onDisappear { store.send(.viewDisappeared) }
             .onChange(of: focusedFieldKeyPath) { newValue in
                 store.send(.textFieldFocusChanged(keyPath: newValue))
             }
@@ -162,11 +166,27 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
                         .accessibilityIdentifier("PasswordGeneratorPolicyInEffectLabel")
                 }
 
-                ForEach(store.state.formSections) { section in
-                    sectionView(section, geometryProxy: geometry)
+                generatorFields(geometry: geometry)
+                if store.state.isSimpleLoginAlias { emailAliasRecoveryView }
+
+                if store.state.isSimpleLoginAlias,
+                   let alias = store.state.emailAliasResult {
+                    emailAliasLifecycleView(alias)
                 }
             }
             .padding(12)
+        }
+    }
+
+    /// Displays the generator form or the address of the saved alias being managed.
+    @ViewBuilder
+    func generatorFields(geometry: GeometryProxy) -> some View {
+        if store.state.boundAlias == nil {
+            ForEach(store.state.formSections) { section in
+                sectionView(section, geometryProxy: geometry)
+            }
+        } else if let alias = store.state.emailAliasResult {
+            ContentBlock { Text(alias.address).styleGuide(.body).padding(16) }
         }
     }
 
@@ -302,6 +322,7 @@ struct GeneratorView: View { // swiftlint:disable:this type_body_length
             ) {
                 store.send(.refreshGeneratedValue)
             }
+            .disabled(store.state.isAliasBusy || store.state.aliasRecoveryNeeded)
             .guidedTourStep(.step5) { frame in
                 store.send(
                     .guidedTourViewAction(.didRenderViewToSpotlight(

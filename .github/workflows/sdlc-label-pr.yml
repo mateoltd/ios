@@ -22,6 +22,7 @@ on:
         default: false
 
 env:
+  GH_REPO: ${{ github.repository }}
   _PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number }}
 
 jobs:
@@ -43,7 +44,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           _PR_USER: ${{ github.event.pull_request.user.login }}
-          _IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          _IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           # Support workflow_dispatch testing by retrieving PR data
           if [ -z "$_PR_USER" ]; then

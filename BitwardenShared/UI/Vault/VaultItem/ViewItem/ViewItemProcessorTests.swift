@@ -46,6 +46,7 @@ class ViewItemProcessorTests: BitwardenTestCase { // swiftlint:disable:this type
         pasteboardService = MockPasteboardService()
         rehydrationHelper = MockRehydrationHelper()
         stateService = MockStateService()
+        stateService.activeAccount = .fixture(profile: .fixture(userId: "1"))
         premiumUpgradeHelper = MockPremiumUpgradeHelper()
         vaultItemActionHelper = MockVaultItemActionHelper()
         vaultRepository = MockVaultRepository()

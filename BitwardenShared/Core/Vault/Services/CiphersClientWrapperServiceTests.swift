@@ -74,6 +74,45 @@ class CiphersClientWrapperServiceTests: BitwardenTestCase {
         XCTAssertEqual(decryptListWithFailuresInvocations[9][20].id, "920")
     }
 
+    /// An exact encrypted alias carrier is omitted from list-processing surfaces.
+    func test_decryptAndProcessCiphersInBatch_excludesAliasConnectionCarrier() async throws {
+        let connection = SimpleLoginAliasAdapter.makeConnection(
+            connectionId: "11111111-1111-4111-8111-111111111111",
+        )
+        let carrier = try AliasConnectionVaultCodec.encode(AliasConnectionVaultPayload(
+            version: AliasConnectionSchema.version,
+            connection: connection,
+            credential: AliasConnectionCredential(
+                token: "encrypted-provider-token",
+                baseUrl: "https://app.simplelogin.io/",
+            ),
+            journal: AliasJournal(version: 1, connectionId: connection.connectionId, events: []),
+        ))
+        let cipher = Cipher(cipherView: carrier)
+        var decryptedCiphers = [CipherListView]()
+
+        await subject.decryptAndProcessCiphersInBatch(ciphers: [cipher]) { view in
+            decryptedCiphers.append(view)
+        }
+
+        XCTAssertTrue(decryptedCiphers.isEmpty)
+    }
+
+    /// A same-named secure note without the reserved marker remains visible.
+    func test_decryptAndProcessCiphersInBatch_keepsOrdinaryReservedNameNote() async {
+        let cipher = Cipher.fixture(
+            name: AliasConnectionSchema.carrierName,
+            type: .secureNote,
+        )
+        var decryptedCiphers = [CipherListView]()
+
+        await subject.decryptAndProcessCiphersInBatch(ciphers: [cipher]) { view in
+            decryptedCiphers.append(view)
+        }
+
+        XCTAssertEqual(decryptedCiphers.map(\.name), [AliasConnectionSchema.carrierName])
+    }
+
     /// `decryptAndProcessCiphersInBatch(batchSize:ciphers:onCipher:)` decrypts ciphers in batches
     /// by the size and converts any failures to `CipherListView`s which can be identified by
     /// the `isDecryptionFailure` property.

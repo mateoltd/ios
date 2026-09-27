@@ -70,6 +70,8 @@ enum VaultItemRoute: Equatable, Hashable {
     ///
     case generator(_ type: GeneratorType, emailWebsite: String? = nil)
 
+    case manageEmailAlias(cipherId: String, userId: String, reference: String)
+
     /// A route to the migrate to my items screen.
     ///
     /// - Parameter organizationId: The organization ID that requires the vault migration.

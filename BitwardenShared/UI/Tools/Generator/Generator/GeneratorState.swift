@@ -1,5 +1,6 @@
 import BitwardenKit
 import BitwardenResources
+import BitwardenSdk
 import Foundation
 
 // swiftlint:disable file_length
@@ -137,6 +138,19 @@ struct GeneratorState: Equatable {
     /// The generated value (password, passphrase or username).
     var generatedValue: String = ""
 
+    /// Provider lifecycle state for a generated or locally cached email alias.
+    var emailAliasResult: EmailAliasResult?
+
+    /// A saved login being managed, rather than a new username being generated.
+    var boundAlias: BoundEmailAlias?
+    var aliasContacts = [SendReplyIdentity]()
+    var aliasRecipient = ""
+    var recoveredAliases = [EmailAliasResult]()
+    var aliasRecoveryNeeded = false
+    var isAliasBusy = false
+    var boundAliasSessionEnded = false
+    var aliasContactRecoveryNeeded = false
+
     /// The state of the guided tour view.
     var guidedTourViewState = GuidedTourViewState(
         guidedTourStepStates: [
@@ -200,6 +214,16 @@ struct GeneratorState: Equatable {
                 []
             }
         }
+    }
+
+    /// Whether the current selection is a provider-backed forwarded email alias.
+    var isForwardedEmailAlias: Bool {
+        generatorType == .username && usernameState.usernameGeneratorType == .forwardedEmail
+    }
+
+    /// Whether the current selection uses the native SimpleLogin lifecycle client.
+    var isSimpleLoginAlias: Bool {
+        isForwardedEmailAlias && usernameState.forwardedEmailService == .simpleLogin
     }
 
     /// The list of sections to display in the generator form.

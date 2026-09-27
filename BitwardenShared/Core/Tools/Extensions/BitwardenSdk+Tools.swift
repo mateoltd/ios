@@ -89,6 +89,7 @@ extension BitwardenSdk.Send {
             type: type,
             file: model.file.map(SendFile.init),
             text: model.text.map(SendText.init),
+            data: nil, // Item sends are rejected by the type mapping above.
             maxAccessCount: model.maxAccessCount,
             accessCount: model.accessCount,
             disabled: model.disabled,

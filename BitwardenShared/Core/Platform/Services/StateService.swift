@@ -2000,6 +2000,7 @@ actor DefaultStateService: StateService, ActiveAccountStateProvider, ConfigState
         appSettingsStore.setPasswordGenerationOptions(nil, userId: knownUserId)
         appSettingsStore.setUserKeyId(nil, userId: knownUserId)
         appSettingsStore.setV2UpgradeToken(nil, userId: knownUserId)
+        appSettingsStore.setV2EncryptedMigrationsGracePeriodStart(nil, userId: knownUserId)
 
         // Reset the organization user notification banner dismissal so the banner can reappear on the next
         // login. A user-initiated (hard) logout always clears it; a soft logout (e.g. a vault-timeout logout)
@@ -2853,6 +2854,19 @@ extension DefaultStateService: SdkStateBridgeStateService {
 
     func setUserKeyId(_ keyId: String?, userId: String) async {
         appSettingsStore.setUserKeyId(keyId, userId: userId)
+    }
+
+    // MARK: V2 Encrypted Migrations Grace Period
+
+    func getV2EncryptedMigrationsGracePeriodStart(userId: String) async -> V2EncryptedMigrationsGracePeriodStart? {
+        appSettingsStore.v2EncryptedMigrationsGracePeriodStart(userId: userId)
+    }
+
+    func setV2EncryptedMigrationsGracePeriodStart(
+        _ start: V2EncryptedMigrationsGracePeriodStart?,
+        userId: String,
+    ) async {
+        appSettingsStore.setV2EncryptedMigrationsGracePeriodStart(start, userId: userId)
     }
 
     // MARK: V2 Upgrade Token

@@ -20,18 +20,14 @@ struct SDKVersionInfoTests {
     }
 
     /// `version` matches the expected semantic version format from project-common.yml.
-    /// Expected format: "MAJOR.MINOR.PATCH-BUILD_NUMBER-COMMIT_HASH"
+    /// Supports upstream build identifiers and the public fork's alias prerelease identifiers.
     /// Example: "2.0.0-3659-948b207"
     @Test
     func versionMatchesSemanticVersionFormat() {
         let version = SDKVersionInfo.version
 
-        // Regex pattern for semantic version with build number and commit hash
-        // Format: X.Y.Z-BUILD-HASH where:
-        // - X.Y.Z is the semantic version (e.g., 2.0.0)
-        // - BUILD is the build number (e.g., 3659)
-        // - HASH is the short git commit hash (e.g., 948b207)
-        let pattern = #"^\d+\.\d+\.\d+-\d+-[a-f0-9]+$"#
+        // Accept the two SDK version schemes we publish, retaining a required prerelease identity.
+        let pattern = #"^\d+\.\d+\.\d+-(?:\d+-[a-f0-9]+|alias-provider-neutral\.\d+)$"#
 
         let regex = try? NSRegularExpression(pattern: pattern, options: [])
         let range = NSRange(version.startIndex..., in: version)
@@ -39,7 +35,7 @@ struct SDKVersionInfoTests {
 
         #expect(
             matches != nil,
-            "SDK version '\(version)' should match format 'X.Y.Z-BUILD-HASH' (e.g., '2.0.0-3659-948b207')",
+            "SDK version '\(version)' should identify an upstream build or public-fork alias prerelease",
         )
     }
 }

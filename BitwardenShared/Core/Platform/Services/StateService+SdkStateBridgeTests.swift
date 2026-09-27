@@ -4,6 +4,7 @@
 import BitwardenKit
 import BitwardenKitMocks
 import BitwardenSdk
+import Foundation
 import Testing
 
 @testable import BitwardenShared
@@ -400,5 +401,20 @@ struct StateServiceSdkStateBridgeTests {
         await subject.setV2UpgradeToken(nil, userId: "1")
 
         #expect(appSettingsStore.v2UpgradeTokenByUserId["1"] == nil)
+    }
+}
+
+extension StateServiceSdkStateBridgeTests {
+    /// The bridge persists the real eligibility timestamp independently for each account.
+    @Test
+    func migrationGracePeriodStart_roundTripAndIsolation() async {
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        let first = SdkStateBridge(errorReporter: errorReporter, stateService: subject, userId: "1")
+        let second = SdkStateBridge(errorReporter: errorReporter, stateService: subject, userId: "2")
+        await first.setV2EncryptedMigrationsGracePeriodStart(value: start)
+        #expect(await first.getV2EncryptedMigrationsGracePeriodStart() == start)
+        #expect(await second.getV2EncryptedMigrationsGracePeriodStart() == nil)
+        await first.clearV2EncryptedMigrationsGracePeriodStart()
+        #expect(await first.getV2EncryptedMigrationsGracePeriodStart() == nil)
     }
 }

@@ -11,6 +11,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
 
     var clientService: MockClientService!
     var errorReporter: MockErrorReporter!
+    var emailAliasService: MockEmailAliasService!
     var generatorDataStore: DataStore!
     var policyService: MockPolicyService!
     var subject: GeneratorRepository!
@@ -23,6 +24,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
 
         clientService = MockClientService()
         errorReporter = MockErrorReporter()
+        emailAliasService = MockEmailAliasService()
         generatorDataStore = DataStore(errorReporter: errorReporter, storeType: .memory)
         policyService = MockPolicyService()
         stateService = MockStateService()
@@ -30,6 +32,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
         subject = DefaultGeneratorRepository(
             clientService: clientService,
             dataStore: generatorDataStore,
+            emailAliasService: emailAliasService,
             errorReporter: errorReporter,
             policyService: policyService,
             stateService: stateService,
@@ -41,6 +44,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
 
         clientService = nil
         errorReporter = nil
+        emailAliasService = nil
         generatorDataStore = nil
         policyService = nil
         subject = nil
@@ -265,7 +269,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
         clientService.mockGenerators.usernameReturnValue = "USERNAME"
 
         let username = try await subject.generateUsername(
-            settings: UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+            settings: AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
         )
 
         XCTAssertEqual(username, "USERNAME")
@@ -279,7 +283,7 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
 
         await assertAsyncThrows(error: GenerateUsernameError()) {
             _ = try await subject.generateUsername(
-                settings: UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+                settings: AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
             )
         }
     }
@@ -355,6 +359,30 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
         XCTAssertEqual(fetchedOptions, UsernameGenerationOptions(plusAddressedEmail: "user@bitwarden.com"))
     }
 
+    /// SimpleLogin credentials are loaded from the encrypted carrier instead of non-secret settings.
+    func test_getUsernameGenerationOptions_simpleLoginLoadsEncryptedProfile() async throws {
+        let account = Account.fixture()
+        stateService.activeAccount = account
+        stateService.usernameGenerationOptions = [
+            account.profile.userId: UsernameGenerationOptions(
+                serviceType: .simpleLogin,
+                simpleLoginBaseUrl: "https://app.simplelogin.io/",
+                type: .forwardedEmail,
+            ),
+        ]
+        emailAliasService.loadProfileResult = .success(EmailAliasProfile(
+            token: "encrypted-token",
+            baseUrl: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            cachedAlias: nil,
+        ))
+
+        let fetchedOptions = try await subject.getUsernameGenerationOptions()
+
+        XCTAssertEqual(fetchedOptions.simpleLoginApiKey, "encrypted-token")
+        XCTAssertEqual(emailAliasService.baseUrl, "https://app.simplelogin.io/")
+    }
+
     /// `setPasswordGenerationOptions` sets the password generation options for the active account.
     func test_setPasswordGenerationOptions() async throws {
         let account = Account.fixture()
@@ -398,5 +426,23 @@ class GeneratorRepositoryTests: BitwardenTestCase { // swiftlint:disable:this ty
         try await subject.setUsernameGenerationOptions(options)
 
         XCTAssertEqual(stateService.usernameGenerationOptions, [account.profile.userId: options])
+    }
+
+    /// SimpleLogin credentials are stripped before options reach the non-secret settings store.
+    func test_setUsernameGenerationOptions_stripsSimpleLoginToken() async throws {
+        let account = Account.fixture()
+        stateService.activeAccount = account
+        let options = UsernameGenerationOptions(
+            serviceType: .simpleLogin,
+            simpleLoginApiKey: "must-not-be-persisted",
+            simpleLoginBaseUrl: "https://app.simplelogin.io/",
+            type: .forwardedEmail,
+        )
+
+        try await subject.setUsernameGenerationOptions(options)
+
+        let persisted = try XCTUnwrap(stateService.usernameGenerationOptions[account.profile.userId])
+        XCTAssertNil(persisted.simpleLoginApiKey)
+        XCTAssertEqual(persisted.simpleLoginBaseUrl, "https://app.simplelogin.io/")
     }
 } // swiftlint:disable:this file_length
