@@ -76,18 +76,7 @@ class CiphersClientWrapperServiceTests: BitwardenTestCase {
 
     /// An exact encrypted alias carrier is omitted from list-processing surfaces.
     func test_decryptAndProcessCiphersInBatch_excludesAliasConnectionCarrier() async throws {
-        let connection = SimpleLoginAliasAdapter.makeConnection(
-            connectionId: "11111111-1111-4111-8111-111111111111",
-        )
-        let carrier = try AliasConnectionVaultCodec.encode(AliasConnectionVaultPayload(
-            version: AliasConnectionSchema.version,
-            connection: connection,
-            credential: AliasConnectionCredential(
-                token: "encrypted-provider-token",
-                baseUrl: "https://app.simplelogin.io/",
-            ),
-            journal: AliasJournal(version: 1, connectionId: connection.connectionId, events: []),
-        ))
+        let carrier = try CipherView.aliasConnectionFixture()
         let cipher = Cipher(cipherView: carrier)
         var decryptedCiphers = [CipherListView]()
 

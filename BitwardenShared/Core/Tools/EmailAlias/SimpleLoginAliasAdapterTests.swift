@@ -85,6 +85,86 @@ final class SimpleLoginAliasAdapterTests: BitwardenTestCase {
         }
     }
 
+    /// A server may apply a mutation before returning 5xx; it is not a safe retry signal.
+    func test_create_serverFailureKeepsOutcomeUnknown() async throws {
+        AliasTestURLProtocol.handler = { _ in .json([:], statusCode: 503) }
+        let client = try makeClient()
+
+        do {
+            _ = try await client.create(request: CreateAliasRequest(hostname: nil))
+            XCTFail("Server failure was accepted")
+        } catch {
+            XCTAssertEqual(error as? AliasError, .OutcomeUnknown)
+        }
+    }
+
+    /// Read failures retain the ordinary availability error and never imply a mutation.
+    func test_list_serverFailureReportsServiceUnavailable() async throws {
+        AliasTestURLProtocol.handler = { _ in .json([:], statusCode: 503) }
+        let client = try makeClient()
+
+        do {
+            _ = try await client.list(request: ListAliasesRequest(pageToken: nil))
+            XCTFail("Server failure was accepted")
+        } catch {
+            XCTAssertEqual(error as? AliasError, .ServiceUnavailable)
+        }
+    }
+
+    /// An echoed recipient mismatch is an uncertain mutation, even across SDK output validation.
+    func test_createContact_recipientMismatchKeepsOutcomeUnknown() async throws {
+        let provider = AliasProviderTestState()
+        AliasTestURLProtocol.handler = { _ in
+            .json([
+                "id": 91,
+                "contact": "other@example.com",
+                "reverse_alias_address": "reply@example.com",
+                "block_forward": false,
+            ])
+        }
+        let client = try makeClient()
+
+        do {
+            _ = try await client.createSendReplyIdentity(request: CreateSendReplyIdentityRequest(
+                alias: provider.aliasIdentity(connectionId: connectionId), recipient: "recipient@example.com",
+            ))
+            XCTFail("Mismatched recipient was accepted")
+        } catch {
+            XCTAssertEqual(error as? AliasError, .OutcomeUnknown)
+        }
+    }
+
+    /// Control characters must fail in the adapter before a successful mutation reaches the SDK.
+    func test_create_controlCharacterAddressKeepsOutcomeUnknown() async throws {
+        AliasTestURLProtocol.handler = { _ in
+            .json(["id": 42, "email": "alias\u{0001}@example.com", "enabled": true])
+        }
+        let client = try makeClient()
+
+        do {
+            _ = try await client.create(request: CreateAliasRequest(hostname: nil))
+            XCTFail("Control-character address was accepted")
+        } catch {
+            XCTAssertEqual(error as? AliasError, .OutcomeUnknown)
+        }
+    }
+
+    /// Plain HTTP credentials cannot be dispatched to a hostname disguised as a loopback address.
+    func test_init_rejectsNonLoopbackHTTPBeforeNetworkRequest() throws {
+        let provider = AliasProviderTestState()
+        AliasTestURLProtocol.handler = provider.response
+
+        XCTAssertThrowsError(try SimpleLoginAliasAdapter(
+            connection: SimpleLoginAliasAdapter.makeConnection(connectionId: connectionId),
+            credential: AliasConnectionCredential(
+                token: "provider-token", baseUrl: "http://127.0.0.1.attacker.example/",
+            ),
+        )) { error in
+            XCTAssertEqual(error as? AliasError, .InvalidInput)
+        }
+        XCTAssertTrue(provider.recordedRequests().isEmpty)
+    }
+
     private func makeClient() throws -> AliasClient {
         let connection = SimpleLoginAliasAdapter.makeConnection(connectionId: connectionId)
         let credential = AliasConnectionCredential(
@@ -103,57 +183,7 @@ final class SimpleLoginAliasAdapterTests: BitwardenTestCase {
     }
 }
 
-final class ForwardedEmailAliasGeneratorTests: BitwardenTestCase {
-    override func tearDown() {
-        AliasTestURLProtocol.handler = nil
-        super.tearDown()
-    }
-
-    /// Existing create-only services remain operational outside the canonical lifecycle model.
-    func test_generateDuckDuckGo_preservesExistingProviderBoundary() async throws {
-        let provider = AliasProviderTestState()
-        AliasTestURLProtocol.handler = { request in
-            provider.record(request)
-            return .json(["address": "generated-local-part"])
-        }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [AliasTestURLProtocol.self]
-        let subject = ForwardedEmailAliasGenerator(session: URLSession(configuration: configuration))
-
-        let address = try await subject.generate(service: .duckDuckGo(token: "provider-token"), website: nil)
-
-        XCTAssertEqual(address, "generated-local-part@duck.com")
-        XCTAssertEqual(
-            provider.recordedRequests().first?.value(forHTTPHeaderField: "Authorization"),
-            "Bearer provider-token",
-        )
-    }
-
-    /// First-class aliases cannot bypass encrypted dispatch journaling through the legacy path.
-    func test_generateSimpleLogin_failsClosedWithoutNetworkRequest() async throws {
-        let provider = AliasProviderTestState()
-        AliasTestURLProtocol.handler = { request in
-            provider.record(request)
-            return .json([:])
-        }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [AliasTestURLProtocol.self]
-        let subject = ForwardedEmailAliasGenerator(session: URLSession(configuration: configuration))
-
-        do {
-            _ = try await subject.generate(
-                service: .simpleLogin(apiKey: "provider-token", baseUrl: "https://app.simplelogin.io/"),
-                website: nil,
-            )
-            XCTFail("The create-only compatibility path accepted a first-class provider")
-        } catch {
-            XCTAssertEqual(error as? EmailAliasError, .invalidConfiguration)
-        }
-        XCTAssertTrue(provider.recordedRequests().isEmpty)
-    }
-}
-
-private final class AliasProviderTestState: @unchecked Sendable {
+final class AliasProviderTestState: @unchecked Sendable {
     private let lock = NSLock()
     private var blocked = false
     private var enabled = true
@@ -225,7 +255,7 @@ private final class AliasProviderTestState: @unchecked Sendable {
     }
 }
 
-private final class AliasTestURLProtocol: URLProtocol, @unchecked Sendable {
+final class AliasTestURLProtocol: URLProtocol, @unchecked Sendable {
     struct Response: @unchecked Sendable {
         let body: Any
         let statusCode: Int
@@ -236,6 +266,23 @@ private final class AliasTestURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> Response)?
+
+    static func jsonBody(_ request: URLRequest) throws -> [String: Any] {
+        if let data = request.httpBody {
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        let stream = try XCTUnwrap(request.httpBodyStream)
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
 
     // swiftlint:disable:next static_over_final_class
     override class func canInit(with _: URLRequest) -> Bool { true }

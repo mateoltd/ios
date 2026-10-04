@@ -8,6 +8,7 @@ class MockGeneratorRepository: GeneratorRepository {
     var refreshedAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
     var recoveredAliasesResult: Result<[EmailAliasResult], Error> = .success([])
     var contactsResult: Result<[SendReplyIdentity], Error> = .success([])
+    var contactsHandler: (() async throws -> [SendReplyIdentity])?
     var contactOperation: EmailAliasContactOperation?
     var boundTarget: BoundEmailAlias?
 
@@ -42,6 +43,7 @@ class MockGeneratorRepository: GeneratorRepository {
     )
 
     var usernameGeneratorRequest: AppUsernameGeneratorRequest?
+    var generateUsernameHandler: ((AppUsernameGeneratorRequest) async throws -> String)?
     var usernameResult: Result<String, Error> = .success("USERNAME")
 
     var cancelEmailAliasOperationsCalled = false
@@ -100,6 +102,7 @@ class MockGeneratorRepository: GeneratorRepository {
         operation: EmailAliasContactOperation,
     ) async throws -> [SendReplyIdentity] {
         contactOperation = operation
+        if let contactsHandler { return try await contactsHandler() }
         return try contactsResult.get()
     }
 
@@ -137,6 +140,7 @@ class MockGeneratorRepository: GeneratorRepository {
 
     func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String {
         usernameGeneratorRequest = settings
+        if let generateUsernameHandler { return try await generateUsernameHandler(settings) }
         return try usernameResult.get()
     }
 

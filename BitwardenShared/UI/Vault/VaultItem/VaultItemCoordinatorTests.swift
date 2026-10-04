@@ -1,10 +1,13 @@
 import AVFoundation
 import BitwardenKit
 import BitwardenKitMocks
+import BitwardenResources
 import SwiftUI
+import TestHelpers
 import XCTest
 
 @testable import BitwardenShared
+@testable import BitwardenSharedMocks
 
 // swiftlint:disable file_length
 
@@ -14,27 +17,36 @@ class VaultItemCoordinatorTests: BitwardenTestCase { // swiftlint:disable:this t
     // MARK: Properties
 
     var appExtensionDelegate: MockAppExtensionDelegate!
+    var authRepository: MockAuthRepository!
     var cameraService: MockCameraService!
     var module: MockAppModule!
     var stackNavigator: MockStackNavigator!
+    var stateService: MockStateService!
     var subject: VaultItemCoordinator!
     var vaultRepository: MockVaultRepository!
+    var vaultTimeoutService: MockVaultTimeoutService!
 
     // MARK: Setup & Teardown
 
     override func setUp() {
         super.setUp()
         appExtensionDelegate = MockAppExtensionDelegate()
+        authRepository = MockAuthRepository()
         cameraService = MockCameraService()
         module = MockAppModule()
         stackNavigator = MockStackNavigator()
+        stateService = MockStateService()
         vaultRepository = MockVaultRepository()
+        vaultTimeoutService = MockVaultTimeoutService()
         subject = VaultItemCoordinator(
             appExtensionDelegate: appExtensionDelegate,
             module: module,
             services: ServiceContainer.withMocks(
+                authRepository: authRepository,
                 cameraService: cameraService,
+                stateService: stateService,
                 vaultRepository: vaultRepository,
+                vaultTimeoutService: vaultTimeoutService,
             ),
             stackNavigator: stackNavigator,
         )
@@ -43,14 +55,98 @@ class VaultItemCoordinatorTests: BitwardenTestCase { // swiftlint:disable:this t
     override func tearDown() {
         super.tearDown()
         appExtensionDelegate = nil
+        authRepository = nil
         cameraService = nil
         module = nil
         stackNavigator = nil
+        stateService = nil
         subject = nil
         vaultRepository = nil
+        vaultTimeoutService = nil
     }
 
     // MARK: Tests
+
+    @MainActor
+    private func showManageAliasReprompt() async throws -> BitwardenKit.Alert {
+        stateService.activeAccount = .fixture(profile: .fixture(userId: "1"))
+        vaultRepository.fetchCipherResult = .success(.fixture(reprompt: .password))
+        subject.navigate(to: .manageEmailAlias(cipherId: "saved", userId: "1", reference: "reference"))
+        try await waitForAsync { !self.stackNavigator.alerts.isEmpty }
+        XCTAssertTrue(stackNavigator.actions.isEmpty)
+        XCTAssertTrue(module.generatorCoordinator.routes.isEmpty)
+        return try XCTUnwrap(stackNavigator.alerts.last)
+    }
+
+    /// Management presents the exact saved target only after the real reprompt helper succeeds.
+    @MainActor
+    func test_manageEmailAlias_validRepromptPresentsSavedTarget() async throws {
+        let alert = try await showManageAliasReprompt()
+        try alert.setText("disposable-password", forTextFieldWithId: "password")
+        try await alert.tapAction(title: Localizations.submit)
+        try await waitForAsync { !self.stackNavigator.actions.isEmpty }
+
+        XCTAssertEqual(authRepository.validatePasswordPasswords, ["disposable-password"])
+        XCTAssertEqual(module.generatorCoordinator.routes, [
+            .manageEmailAlias(cipherId: "saved", userId: "1", reference: "reference"),
+        ])
+        XCTAssertEqual(stackNavigator.actions.last?.type, .presented)
+    }
+
+    /// Cancelling verification never opens the saved alias management flow.
+    @MainActor
+    func test_manageEmailAlias_cancelledRepromptDoesNotPresent() async throws {
+        let alert = try await showManageAliasReprompt()
+        try await alert.tapAction(title: Localizations.cancel)
+        await Task.yield()
+
+        XCTAssertTrue(authRepository.validatePasswordPasswords.isEmpty)
+        XCTAssertTrue(module.generatorCoordinator.routes.isEmpty)
+        XCTAssertTrue(stackNavigator.actions.isEmpty)
+    }
+
+    /// Invalid verification does not authorize management after the error alert is dismissed.
+    @MainActor
+    func test_manageEmailAlias_invalidRepromptDoesNotPresent() async throws {
+        authRepository.validatePasswordResult = .success(false)
+        let alert = try await showManageAliasReprompt()
+        try alert.setText("wrong-password", forTextFieldWithId: "password")
+        try await alert.tapAction(title: Localizations.submit)
+        try await waitForAsync { self.stackNavigator.alerts.last?.title == Localizations.invalidMasterPassword }
+        stackNavigator.alertOnDismissed?()
+        await Task.yield()
+
+        XCTAssertEqual(authRepository.validatePasswordPasswords, ["wrong-password"])
+        XCTAssertTrue(module.generatorCoordinator.routes.isEmpty)
+        XCTAssertTrue(stackNavigator.actions.isEmpty)
+    }
+
+    /// A successful password response cannot authorize the old account after switching accounts.
+    @MainActor
+    func test_manageEmailAlias_accountSwitchDuringRepromptDoesNotPresent() async throws {
+        let alert = try await showManageAliasReprompt()
+        stateService.activeAccount = .fixture(profile: .fixture(userId: "2"))
+        try alert.setText("disposable-password", forTextFieldWithId: "password")
+        try await alert.tapAction(title: Localizations.submit)
+        await Task.yield()
+
+        XCTAssertEqual(authRepository.validatePasswordPasswords, ["disposable-password"])
+        XCTAssertTrue(module.generatorCoordinator.routes.isEmpty)
+        XCTAssertTrue(stackNavigator.actions.isEmpty)
+    }
+
+    /// Locking the original vault while reprompt is open revokes management authorization.
+    @MainActor
+    func test_manageEmailAlias_lockDuringRepromptDoesNotPresent() async throws {
+        let alert = try await showManageAliasReprompt()
+        vaultTimeoutService.isClientLocked["1"] = true
+        try alert.setText("disposable-password", forTextFieldWithId: "password")
+        try await alert.tapAction(title: Localizations.submit)
+        await Task.yield()
+
+        XCTAssertTrue(module.generatorCoordinator.routes.isEmpty)
+        XCTAssertTrue(stackNavigator.actions.isEmpty)
+    }
 
     /// `navigate(to:)` with `.addFolder` starts the add/edit folder coordinator and navigates
     /// to the add/edit folder view.

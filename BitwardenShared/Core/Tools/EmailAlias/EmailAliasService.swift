@@ -402,17 +402,9 @@ actor DefaultEmailAliasService: EmailAliasService { // swiftlint:disable:this ty
         let originalJournal = state.journal
         let operationId = UUID().uuidString.lowercased()
         do {
-            try await appendAndPersist(
+            try await prepareAndDispatch(
                 operationId: operationId,
                 operation: .create,
-                phase: .prepared,
-                state: &state,
-                context: context,
-            )
-            try await appendAndPersist(
-                operationId: operationId,
-                operation: .create,
-                phase: .dispatched,
                 state: &state,
                 context: context,
             )

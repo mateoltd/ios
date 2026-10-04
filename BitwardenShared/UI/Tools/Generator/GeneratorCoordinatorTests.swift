@@ -71,6 +71,7 @@ class GeneratorCoordinatorTests: BitwardenTestCase {
         XCTAssertEqual(delegate.didCreateEmailAliasReference, "canonical-reference")
         XCTAssertTrue(delegate.didCompleteGeneratorCalled)
         XCTAssertEqual(delegate.didCompleteGeneratorValue, "alias@example.com")
+        XCTAssertEqual(delegate.aliasReferenceAtCompletion, "canonical-reference")
     }
 
     /// `navigate(to:)` with `.generator` and a delegate pushes the generator view onto the stack
@@ -219,12 +220,14 @@ class MockGeneratorCoordinatorDelegate: GeneratorCoordinatorDelegate {
     var didCompleteGeneratorType: GeneratorType?
     var didCompleteGeneratorValue: String?
     var didCreateEmailAliasReference: String?
+    var aliasReferenceAtCompletion: String?
 
     func didCancelGenerator() {
         didCancelGeneratorCalled = true
     }
 
     func didCompleteGenerator(for type: GeneratorType, with value: String) {
+        aliasReferenceAtCompletion = didCreateEmailAliasReference
         didCompleteGeneratorCalled = true
         didCompleteGeneratorType = type
         didCompleteGeneratorValue = value

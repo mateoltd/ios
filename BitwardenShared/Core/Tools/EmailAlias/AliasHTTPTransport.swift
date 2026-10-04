@@ -128,7 +128,8 @@ final class AliasHTTPTransport: @unchecked Sendable {
             let retry = http.value(forHTTPHeaderField: "Retry-After").flatMap(UInt64.init)
             throw AliasError.RateLimited(retryAfterSeconds: retry)
         case 500 ... Int.max:
-            throw AliasError.ServiceUnavailable
+            // A server error after dispatch does not establish that a mutation was rolled back.
+            throw mutation ? AliasError.OutcomeUnknown : AliasError.ServiceUnavailable
         default:
             throw invalidResponse
         }

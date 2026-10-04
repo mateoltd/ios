@@ -142,7 +142,10 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
                     state.generatedValue = alias.address
                 } catch is CancellationError {
                     // The screen no longer owns this request.
-                } catch { showEmailAliasError(error) }
+                } catch {
+                    guard !Task.isCancelled, generation == emailAliasStateGeneration else { return }
+                    showEmailAliasError(error)
+                }
                 return
             }
             let generation = emailAliasStateGeneration
@@ -393,8 +396,8 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
     /// Generate a new username.
     ///
     func generateUsername() async {
-        guard state.boundAlias == nil, !state.isAliasBusy else { return }
-        if state.isSimpleLoginAlias, state.aliasRecoveryNeeded { return }
+        guard state.boundAlias == nil, !state.isAliasBusy,
+              !state.isSimpleLoginAlias || !state.aliasRecoveryNeeded else { return }
         let generation = emailAliasStateGeneration
         state.isAliasBusy = state.isSimpleLoginAlias
         defer { if generation == emailAliasStateGeneration { state.isAliasBusy = false } }
@@ -407,20 +410,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         }
         do {
             if state.isSimpleLoginAlias {
-                announce(Localizations.emailAliasCreating)
-                let result = try await services.generatorRepository.createEmailAlias(
-                    token: state.usernameState.simpleLoginAPIKey,
-                    baseUrl: state.usernameState.simpleLoginSelfHostServerUrl,
-                    hostname: state.usernameState.emailWebsite,
-                )
-                try Task.checkCancellation()
-                guard generation == emailAliasStateGeneration else { return }
-                state.emailAliasResult = result
-                state.aliasRecoveryNeeded = result.status == .unknown || result.journalPersistenceFailed
-                try await setGeneratedValue(result.address)
-                announce(result.status == .unknown
-                    ? Localizations.emailAliasOutcomeUnknown
-                    : Localizations.emailAliasCreated)
+                try await createEmailAlias(generation: generation)
                 return
             }
             guard let usernameGeneratorRequest = try state.usernameState.usernameGeneratorRequest() else {
@@ -431,10 +421,12 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
                 settings: usernameGeneratorRequest,
             )
             try Task.checkCancellation()
+            guard generation == emailAliasStateGeneration else { return }
             try await setGeneratedValue(username)
         } catch is CancellationError {
             // No-op: don't log or alert for cancellation errors.
         } catch {
+            guard !Task.isCancelled, generation == emailAliasStateGeneration else { return }
             if state.isForwardedEmailAlias {
                 showEmailAliasError(error)
             } else {
@@ -442,6 +434,23 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
                 Logger.application.error("Generator: error generating username: \(error)")
             }
         }
+    }
+
+    private func createEmailAlias(generation: UInt64) async throws {
+        announce(Localizations.emailAliasCreating)
+        let result = try await services.generatorRepository.createEmailAlias(
+            token: state.usernameState.simpleLoginAPIKey,
+            baseUrl: state.usernameState.simpleLoginSelfHostServerUrl,
+            hostname: state.usernameState.emailWebsite,
+        )
+        try Task.checkCancellation()
+        guard generation == emailAliasStateGeneration else { return }
+        state.emailAliasResult = result
+        state.aliasRecoveryNeeded = result.status == .unknown || result.journalPersistenceFailed
+        try await setGeneratedValue(result.address)
+        announce(result.status == .unknown
+            ? Localizations.emailAliasOutcomeUnknown
+            : Localizations.emailAliasCreated)
     }
 
     /// Generates a new value based on the current settings.
@@ -520,6 +529,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
         } catch is CancellationError {
             // Cancellation is expected on lock, logout, account switch, and extension expiry.
         } catch {
+            guard !Task.isCancelled, generation == emailAliasStateGeneration else { return }
             showEmailAliasError(error)
         }
     }
@@ -544,6 +554,7 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
             } catch is CancellationError {
                 // Cancellation is expected during vault lifecycle transitions.
             } catch {
+                guard !Task.isCancelled, generation == emailAliasStateGeneration else { return }
                 showEmailAliasError(error)
             }
         }
@@ -613,11 +624,13 @@ final class GeneratorProcessor: StateProcessor<GeneratorState, GeneratorAction, 
 
     private func updateAliasContacts(_ operation: EmailAliasContactOperation) async throws {
         guard let alias = state.emailAliasResult, alias.status == .enabled else { return }
+        let generation = emailAliasStateGeneration
         do {
             let contacts = try await services.generatorRepository.emailAliasContacts(alias, operation: operation)
             try Task.checkCancellation()
             state.aliasContacts = contacts
         } catch {
+            guard !Task.isCancelled, generation == emailAliasStateGeneration else { throw error }
             if error as? EmailAliasError == .operationOutcomeUnknown { state.aliasContactRecoveryNeeded = true }
             throw error
         }

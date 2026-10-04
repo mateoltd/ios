@@ -2,6 +2,7 @@
 
 import BitwardenKitMocks
 import BitwardenSdk
+import TestHelpers
 import XCTest
 
 @testable import BitwardenShared
@@ -26,7 +27,11 @@ final class EmailAliasServiceTests: BitwardenTestCase {
         stateService.activeAccount = .fixture(profile: .fixture(userId: "account-1"))
         syncService = MockSyncService()
         vaultTimeoutService = MockVaultTimeoutService()
-        subject = DefaultEmailAliasService(
+        subject = makeSubject()
+    }
+
+    private func makeSubject() -> DefaultEmailAliasService {
+        DefaultEmailAliasService(
             adapter: AliasAdapterRegistration(
                 adapterId: SimpleLoginAliasAdapter.adapterId,
                 defaultBaseUrl: ForwardedEmailServiceType.defaultSimpleLoginBaseUrl,
@@ -61,6 +66,11 @@ final class EmailAliasServiceTests: BitwardenTestCase {
             status: .enabled,
             ownerUserId: "account-1",
         )
+    }
+
+    private func lastSubmittedJournal() throws -> AliasJournal {
+        let cipher = try XCTUnwrap(cipherService.addCipherWithServerCiphers.last)
+        return try AliasConnectionVaultCodec.decode(CipherView(cipher: cipher)).journal
     }
 
     private func carrier(observedAlias: Bool = false) throws -> CipherView {
@@ -103,7 +113,22 @@ extension EmailAliasServiceTests {
 
     /// One explicit create persists prepared and dispatched facts before exactly one callback.
     func test_createAlias_explicitActionPersistsDispatchAndCallsProviderOnce() async throws {
-        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
+        var persisted = try [Cipher(cipherView: carrier())]
+        cipherService.fetchAllCiphersResult = .success(persisted)
+        cipherService.addCipherWithServerHandler = { [cipherService] cipher in
+            persisted.append(cipher)
+            cipherService?.fetchAllCiphersResult = .success(persisted)
+        }
+        fakeClient.createHandler = { [fakeClient] in
+            let writes = try persisted.dropFirst().map { try AliasConnectionVaultCodec.decode(CipherView(cipher: $0)) }
+            XCTAssertEqual(writes.count, 2)
+            XCTAssertEqual(writes.first?.journal.events.map(\.phase), [.prepared])
+            let dispatched = try XCTUnwrap(writes.last?.journal.events.sorted { $0.sequence < $1.sequence })
+            XCTAssertEqual(dispatched.map(\.phase), [.prepared, .dispatched])
+            XCTAssertEqual(Set(dispatched.map(\.operationId)).count, 1)
+            XCTAssertTrue(dispatched.allSatisfy { $0.operation == .create && $0.target == nil })
+            return fakeClient!.aliasFixture()
+        }
 
         let result = try await subject.createAlias(
             token: "encrypted-provider-token",
@@ -120,6 +145,67 @@ extension EmailAliasServiceTests {
         let reference = try parseAliasReference(value: result.reference)
         XCTAssertEqual(reference.connectionId, connectionId)
         XCTAssertEqual(reference.aliasId, "42")
+        let acknowledged = try AliasConnectionVaultCodec.decode(CipherView(cipher: XCTUnwrap(persisted.last)))
+            .journal.events.sorted { $0.sequence < $1.sequence }
+        XCTAssertEqual(acknowledged.map(\.phase), [.prepared, .dispatched, .acknowledged])
+        XCTAssertEqual(Set(acknowledged.map(\.operationId)).count, 1)
+        XCTAssertEqual(acknowledged.last?.target, result.identity)
+        XCTAssertEqual(acknowledged.last?.lifecycle, .enabled)
+    }
+
+    /// A failed terminal write retains the durable dispatch and a usable identity, without blind retry.
+    func test_createAlias_acknowledgementWriteFailureRemainsRecoverableAfterRestart() async throws {
+        var persisted = try [Cipher(cipherView: carrier())]
+        cipherService.fetchAllCiphersResult = .success(persisted)
+        cipherService.addCipherWithServerHandler = { [cipherService] cipher in
+            guard persisted.count < 3 else { throw OfflineError() }
+            persisted.append(cipher)
+            cipherService?.fetchAllCiphersResult = .success(persisted)
+        }
+
+        let result = try await subject.createAlias(
+            token: "encrypted-provider-token", baseUrl: "https://app.simplelogin.io/", hostname: nil,
+        )
+
+        XCTAssertEqual(result.address, "alias@example.com")
+        XCTAssertEqual(result.status, .enabled)
+        XCTAssertTrue(result.journalPersistenceFailed)
+        XCTAssertEqual(try parseAliasReference(value: result.reference).connectionId, connectionId)
+        XCTAssertEqual(fakeClient.createCallCount, 1)
+        subject = makeSubject()
+        let profile = try await subject.loadProfile(baseUrl: "https://app.simplelogin.io/")
+        XCTAssertEqual(profile?.recoveryNeeded, true)
+        await assertAsyncThrows(error: EmailAliasError.operationOutcomeUnknown) {
+            _ = try await self.subject.createAlias(
+                token: "encrypted-provider-token", baseUrl: "https://app.simplelogin.io/", hostname: nil,
+            )
+        }
+        XCTAssertEqual(fakeClient.createCallCount, 1)
+    }
+
+    /// An ambiguous callback persists an unknown phase that still blocks creation in a new service.
+    func test_createAlias_unknownCallbackPersistsAndRejectsRepeatAfterRestart() async throws {
+        var persisted = try [Cipher(cipherView: carrier())]
+        cipherService.fetchAllCiphersResult = .success(persisted)
+        cipherService.addCipherWithServerHandler = { [cipherService] cipher in
+            persisted.append(cipher)
+            cipherService?.fetchAllCiphersResult = .success(persisted)
+        }
+        fakeClient.createHandler = { throw AliasError.OutcomeUnknown }
+
+        for _ in 0 ..< 2 {
+            await assertAsyncThrows(error: EmailAliasError.operationOutcomeUnknown) {
+                _ = try await self.subject.createAlias(
+                    token: "encrypted-provider-token", baseUrl: "https://app.simplelogin.io/", hostname: nil,
+                )
+            }
+            subject = makeSubject()
+        }
+        XCTAssertEqual(fakeClient.createCallCount, 1)
+        let events = try AliasConnectionVaultCodec.decode(CipherView(cipher: XCTUnwrap(persisted.last)))
+            .journal.events.sorted { $0.sequence < $1.sequence }
+        XCTAssertEqual(events.map(\.phase), [.prepared, .dispatched, .outcomeUnknown])
+        XCTAssertEqual(events.last?.error, .outcomeUnknown)
     }
 
     /// Carrier writes preserve the SDK's key identity so the server can reject stale-key writes.
@@ -185,7 +271,7 @@ extension EmailAliasServiceTests {
         XCTAssertEqual(fakeClient.providerCallCount, 0)
     }
 
-    /// Cancelling the caller also cancels the actor's provider task.
+    /// Cancelling the caller discards a late callback and prevents acknowledgement persistence.
     func test_createAlias_callerCancellationDiscardsLateCallback() async throws {
         cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: carrier())])
         let providerStarted = expectation(description: "provider started")
@@ -345,6 +431,12 @@ extension EmailAliasServiceTests {
         XCTAssertEqual(fakeClient.setEnabledCallCount, 1)
         XCTAssertEqual(fakeClient.providerCallCount, 1)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 3)
+        let journal = try lastSubmittedJournal()
+        let disabled = journal.events.filter { $0.operation == .disable }.sorted { $0.sequence < $1.sequence }
+        XCTAssertEqual(disabled.map(\.phase), [.prepared, .dispatched, .acknowledged])
+        XCTAssertEqual(Set(disabled.map(\.operationId)).count, 1)
+        XCTAssertEqual(disabled.last?.target, result.identity)
+        XCTAssertEqual(try reduceAliasJournal(journal: journal).resources.first?.lifecycle, .disabled)
     }
 
     /// Deletion records a terminal tombstone without clearing the caller's valid login state.
@@ -357,6 +449,12 @@ extension EmailAliasServiceTests {
         XCTAssertEqual(fakeClient.deleteCallCount, 1)
         XCTAssertEqual(fakeClient.providerCallCount, 1)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 3)
+        let journal = try lastSubmittedJournal()
+        let deleted = journal.events.filter { $0.operation == .delete }.sorted { $0.sequence < $1.sequence }
+        XCTAssertEqual(deleted.map(\.phase), [.prepared, .dispatched, .acknowledged])
+        XCTAssertEqual(Set(deleted.map(\.operationId)).count, 1)
+        XCTAssertEqual(deleted.last?.target, result.identity)
+        XCTAssertEqual(try reduceAliasJournal(journal: journal).resources.first?.tombstoned, true)
     }
 
     /// Explicit reconciliation syncs first, consumes opaque pages, observes resources, and converges.
@@ -369,6 +467,11 @@ extension EmailAliasServiceTests {
         XCTAssertEqual(fakeClient.listCallCount, 2)
         XCTAssertEqual(fakeClient.providerCallCount, 2)
         XCTAssertEqual(cipherService.addCipherWithServerCiphers.count, 4)
+        let journal = try lastSubmittedJournal()
+        let reconciled = journal.events.filter { $0.operation == .reconcile }.sorted { $0.sequence < $1.sequence }
+        XCTAssertEqual(reconciled.map(\.phase), [.prepared, .dispatched, .acknowledged])
+        XCTAssertEqual(Set(reconciled.map(\.operationId)).count, 1)
+        XCTAssertEqual(try reduceAliasJournal(journal: journal).resources.first?.identity, result?.identity)
     }
 }
 

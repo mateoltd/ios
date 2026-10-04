@@ -177,6 +177,34 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         XCTAssertTrue(subject.state.aliasRecoveryNeeded)
     }
 
+    /// A late contact error cannot restore recovery state after the screen has closed.
+    @MainActor
+    func test_contactFailureAfterDisappearanceDoesNotRestoreRecoveryState() async throws {
+        let providerStarted = expectation(description: "contact request started")
+        let providerFinished = expectation(description: "contact request finished")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.contactsHandler = {
+            providerStarted.fulfill()
+            await gate.wait()
+            defer { providerFinished.fulfill() }
+            throw EmailAliasError.operationOutcomeUnknown
+        }
+        await subject.perform(.appeared)
+        subject.state.emailAliasResult = aliasResult()
+        subject.receive(.aliasContacts(.create(recipient: "person@example.com")))
+        await fulfillment(of: [providerStarted], timeout: 1)
+        subject.receive(.viewDisappeared)
+        await gate.resume()
+        await fulfillment(of: [providerFinished], timeout: 1)
+        await Task.yield()
+
+        XCTAssertFalse(subject.state.aliasContactRecoveryNeeded)
+        XCTAssertFalse(subject.state.aliasRecoveryNeeded)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertTrue(subject.state.aliasContacts.isEmpty)
+        XCTAssertTrue(coordinator.alertShown.isEmpty)
+    }
+
     /// Contact results are cleared on vault lock along with recipients and outgoing mail URLs.
     @MainActor
     func test_vaultLock_clearsContactState() async throws {
@@ -959,6 +987,62 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         XCTAssertEqual(subject.state.generatedValue, "")
     }
 
+    /// A late failure cannot restore recovery UI or show an alert after the screen ends its session.
+    @MainActor
+    func test_generateUsername_discardsLateFailureAfterDisappearance() async throws {
+        let providerStarted = expectation(description: "provider started")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.createEmailAliasHandler = { _, _, _ in
+            providerStarted.fulfill()
+            await gate.wait()
+            throw EmailAliasError.operationOutcomeUnknown
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        let operation = Task { await self.subject.generateUsername() }
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        subject.receive(.viewDisappeared)
+        await gate.resume()
+        await operation.value
+
+        XCTAssertFalse(subject.state.aliasRecoveryNeeded)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+        XCTAssertTrue(coordinator.alertShown.isEmpty)
+    }
+
+    /// Create-only providers also discard late output when the view session has changed.
+    @MainActor
+    func test_generateUsername_discardsForwardedResultAfterDisappearance() async throws {
+        let providerStarted = expectation(description: "provider started")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.generateUsernameHandler = { _ in
+            providerStarted.fulfill()
+            await gate.wait()
+            return "late@duck.com"
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .duckDuckGo
+        subject.state.usernameState.duckDuckGoAPIKey = "token"
+        let operation = Task { await self.subject.generateUsername() }
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        subject.receive(.viewDisappeared)
+        let clearedValue = subject.state.generatedValue
+        await gate.resume()
+        await operation.value
+
+        XCTAssertEqual(subject.state.generatedValue, clearedValue)
+        XCTAssertNotEqual(subject.state.generatedValue, "late@duck.com")
+        XCTAssertTrue(coordinator.alertShown.isEmpty)
+    }
+
     /// Provider changes cancel in-flight creation even though they never trigger another creation.
     @MainActor
     func test_receive_providerChangeCancelsInFlightAlias() async throws {
@@ -1056,12 +1140,13 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
     @MainActor
     func test_receive_dismissPressed_ignoresLateAliasCallback() async throws {
         let result = aliasResult()
+        let providerStarted = expectation(description: "provider started")
+        let providerFinished = expectation(description: "provider finished")
+        let gate = GeneratorAliasCallGate()
         generatorRepository.createEmailAliasHandler = { _, _, _ in
-            do {
-                try await Task.sleep(nanoseconds: 100_000_000)
-            } catch {
-                // Deliberately emulate a provider callback that ignores cancellation.
-            }
+            providerStarted.fulfill()
+            await gate.wait()
+            defer { providerFinished.fulfill() }
             return result
         }
         try await waitForAsync { self.subject.didLoadGeneratorOptions }
@@ -1071,9 +1156,11 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         subject.state.usernameState.simpleLoginAPIKey = "token"
 
         subject.receive(.refreshGeneratedValue)
-        try await waitForAsync { self.generatorRepository.createEmailAliasCallCount == 1 }
+        await fulfillment(of: [providerStarted], timeout: 1)
         subject.receive(.dismissPressed)
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        await gate.resume()
+        await fulfillment(of: [providerFinished], timeout: 1)
+        await Task.yield()
 
         XCTAssertNil(subject.state.emailAliasResult)
         XCTAssertEqual(subject.state.generatedValue, "")
@@ -1082,7 +1169,7 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         XCTAssertEqual(coordinator.routes.last, .cancel)
     }
 
-    /// Locking clears all view-owned decrypted alias state and cancels provider work.
+    /// Locking clears decrypted alias state and revokes ownership of in-flight UI results.
     @MainActor
     func test_vaultLock_clearsDecryptedAliasState() async throws {
         try await waitForAsync { self.subject.didLoadGeneratorOptions }

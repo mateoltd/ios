@@ -143,8 +143,11 @@ enum AliasSyncValidation {
     private static func isLoopback(_ hostname: String) -> Bool {
         let host = hostname.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         if host == "localhost" || host.hasSuffix(".localhost") || host == "::1" { return true }
-        let octets = host.split(separator: ".").compactMap { UInt8($0) }
-        return octets.count == 4 && octets.first == 127
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        return octets.count == 4 && octets.first == "127" && octets.allSatisfy { octet in
+            guard let value = UInt8(octet) else { return false }
+            return String(value) == octet
+        }
     }
 
     private static func valid(_ credential: AliasConnectionCredential) -> Bool {

@@ -9,6 +9,7 @@ class MockCipherService: CipherService {
     var addCipherWithServerEncryptedByKeyId: String?
     var addCipherWithServerEncryptedFor: String?
     var addCipherWithServerResult: Result<Void, Error> = .success(())
+    var addCipherWithServerHandler: ((Cipher) async throws -> Void)?
 
     var archiveCipherId: String?
     var archiveCipher: Cipher?
@@ -95,6 +96,7 @@ class MockCipherService: CipherService {
         addCipherWithServerCiphers.append(cipher)
         addCipherWithServerEncryptedByKeyId = encryptedByKeyId
         addCipherWithServerEncryptedFor = encryptedFor
+        if let addCipherWithServerHandler { try await addCipherWithServerHandler(cipher) }
         try addCipherWithServerResult.get()
     }
 

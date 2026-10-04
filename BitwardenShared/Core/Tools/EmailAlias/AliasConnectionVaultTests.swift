@@ -3,6 +3,23 @@ import XCTest
 
 @testable import BitwardenShared
 
+extension CipherView {
+    /// A valid private carrier for positive filtering tests, distinct from an ordinary same-name note.
+    static func aliasConnectionFixture() throws -> CipherView {
+        let connection = SimpleLoginAliasAdapter.makeConnection(
+            connectionId: "11111111-1111-4111-8111-111111111111",
+        )
+        return try AliasConnectionVaultCodec.encode(AliasConnectionVaultPayload(
+            version: AliasConnectionSchema.version,
+            connection: connection,
+            credential: AliasConnectionCredential(
+                token: "provider-token", baseUrl: "https://app.simplelogin.io/",
+            ),
+            journal: AliasJournal.empty(connectionId: connection.connectionId),
+        ))
+    }
+}
+
 final class AliasConnectionVaultTests: XCTestCase {
     private let connectionId = "11111111-1111-4111-8111-111111111111"
     private let replicaId = "22222222-2222-4222-8222-222222222222"
@@ -53,6 +70,34 @@ final class AliasConnectionVaultTests: XCTestCase {
             AliasSyncValidation.canonicalEndpoint("http://127.0.0.1:8080/api"),
             "http://127.0.0.1:8080/api/",
         )
+    }
+
+    /// Every IPv4 label must belong to the address; hostname suffixes cannot become HTTP exceptions.
+    func test_canonicalEndpoint_requiresGenuineLoopbackForHTTP() {
+        for endpoint in [
+            "http://127.0.0.1.attacker.example/",
+            "http://127.foo.0.0.1/",
+            "http://127.0.0.1.999/",
+            "http://127..0.0.1/",
+            "http://127.0.0.256/",
+            "http://127.00.0.1/",
+            "http://192.168.8.223/",
+            "http://localhost.attacker.example/",
+            "http://[::2]/",
+        ] {
+            XCTAssertNil(AliasSyncValidation.canonicalEndpoint(endpoint), endpoint)
+        }
+        for endpoint in [
+            "http://127.0.0.1:8080/",
+            "http://127.255.0.2/",
+            "http://localhost:8080/",
+            "http://lab.localhost/",
+            "http://[::1]:8080/",
+            "https://127.0.0.1.attacker.example/",
+            "https://example.com/",
+        ] {
+            XCTAssertEqual(AliasSyncValidation.canonicalEndpoint(endpoint), endpoint, endpoint)
+        }
     }
 
     /// Payload chunks must be contiguous and journals cannot carry provider credentials.

@@ -1360,6 +1360,42 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
         XCTAssertEqual(cipherService.bulkShareCiphersWithServerCollectionIds, ["default-collection-id"])
     }
 
+    /// Organization migration keeps ordinary notes/logins while excluding private connection credentials.
+    func test_migratePersonalVault_excludesOnlyAliasConnectionCarrier() async throws {
+        let carrier = try CipherView.aliasConnectionFixture()
+        let ordinary = CipherView.fixture(
+            id: "ordinary",
+            name: AliasConnectionSchema.carrierName,
+            secureNote: .init(type: .generic),
+            type: .secureNote,
+        )
+        let login = CipherView.loginFixture(id: "login")
+        cipherService.fetchAllCiphersResult = .success([carrier, ordinary, login].map(Cipher.init(cipherView:)))
+        collectionHelper.orderReturnValue = [
+            .fixture(id: "default", organizationId: "target-org", type: .defaultUserCollection),
+        ]
+        clientCiphers.prepareCiphersForBulkShareReturnValue = []
+
+        try await subject.migratePersonalVault(to: "target-org")
+
+        XCTAssertEqual(clientCiphers.prepareCiphersForBulkShareReceivedArguments?.ciphers, [ordinary, login])
+    }
+
+    /// Migration aborts before sharing any personal data when private-carrier classification cannot decrypt.
+    func test_migratePersonalVault_unreadableCarrierFailsClosed() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: .aliasConnectionFixture())])
+        collectionHelper.orderReturnValue = [
+            .fixture(id: "default", organizationId: "target-org", type: .defaultUserCollection),
+        ]
+        clientCiphers.decryptClosure = { _ in throw BitwardenTestError.example }
+
+        await assertAsyncThrows(error: BitwardenTestError.example) {
+            try await self.subject.migratePersonalVault(to: "target-org")
+        }
+        XCTAssertNil(clientCiphers.prepareCiphersForBulkShareReceivedArguments)
+        XCTAssertTrue(cipherService.bulkShareCiphersEncryptionContexts.isEmpty)
+    }
+
     /// `migratePersonalVault(to:)` does nothing when there are no personal vault items.
     func test_migratePersonalVault_noPersonalItems() async throws {
         // Set up only organization ciphers.

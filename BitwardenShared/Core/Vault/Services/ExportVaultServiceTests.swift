@@ -385,6 +385,35 @@ final class ExportVaultServiceTests: BitwardenTestCase { // swiftlint:disable:th
         )
     }
 
+    /// Export excludes a valid private carrier while preserving an ordinary same-name note and login.
+    @MainActor
+    func test_fetchAllCiphersToExport_excludesOnlyAliasConnectionCarrier() async throws {
+        let carrier = try Cipher(cipherView: .aliasConnectionFixture())
+        let ordinary = Cipher(cipherView: .fixture(
+            id: "ordinary",
+            name: AliasConnectionSchema.carrierName,
+            secureNote: .init(type: .generic),
+            type: .secureNote,
+        ))
+        cipherService.fetchAllCiphersResult = .success([carrier, ordinary, loginCipher])
+
+        let exported = try await subject.fetchAllCiphersToExport(includeArchivedItems: true)
+
+        XCTAssertEqual(exported, [ordinary, loginCipher])
+    }
+
+    /// An unreadable secure note cannot bypass private-carrier exclusion or reach the exporter.
+    @MainActor
+    func test_exportVaultFileContents_unreadableCarrierFailsClosed() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: .aliasConnectionFixture())])
+        clientService.mockVault.clientCiphers.decryptClosure = { _ in throw BitwardenTestError.example }
+
+        await assertAsyncThrows(error: BitwardenTestError.example) {
+            _ = try await self.subject.exportVaultFileContents(format: .json, includeArchivedItems: true)
+        }
+        XCTAssertNil(clientService.mockExporters.exportVaultReceivedArguments)
+    }
+
     /// `fetchAllCiphersToExport()` excludes archived items when `includeArchivedItems` is false.
     ///
     @MainActor

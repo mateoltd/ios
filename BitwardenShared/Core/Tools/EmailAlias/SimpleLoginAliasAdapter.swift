@@ -175,7 +175,11 @@ final class SimpleLoginAliasAdapter: AliasProviderAdapter, @unchecked Sendable {
             mutation: true,
         )
         do {
-            return try parseSendReplyIdentity(json, alias: value.alias)
+            let identity = try parseSendReplyIdentity(json, alias: value.alias)
+            guard try identity.recipient == normalizedEmail(value.recipient) else {
+                throw AliasError.OutcomeUnknown
+            }
+            return identity
         } catch {
             throw AliasError.OutcomeUnknown
         }
@@ -320,6 +324,7 @@ private extension SimpleLoginAliasAdapter {
               parts.count == 2,
               !parts[0].isEmpty,
               !parts[1].isEmpty,
+              !address.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               !address.contains(where: { $0.isWhitespace || $0 == "<" || $0 == ">" })
         else { throw AliasError.InvalidResponse }
         return address
