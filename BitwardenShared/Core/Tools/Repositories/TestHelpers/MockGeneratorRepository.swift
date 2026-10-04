@@ -4,6 +4,14 @@ import Combine
 @testable import BitwardenShared
 
 class MockGeneratorRepository: GeneratorRepository {
+    var boundAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var refreshedAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var recoveredAliasesResult: Result<[EmailAliasResult], Error> = .success([])
+    var contactsResult: Result<[SendReplyIdentity], Error> = .success([])
+    var contactsHandler: (() async throws -> [SendReplyIdentity])?
+    var contactOperation: EmailAliasContactOperation?
+    var boundTarget: BoundEmailAlias?
+
     var addPasswordHistoryCalled = false
 
     var clearPasswordHistoryCalled = false
@@ -34,8 +42,24 @@ class MockGeneratorRepository: GeneratorRepository {
         minSpecial: nil,
     )
 
-    var usernameGeneratorRequest: UsernameGeneratorRequest?
+    var usernameGeneratorRequest: AppUsernameGeneratorRequest?
+    var generateUsernameHandler: ((AppUsernameGeneratorRequest) async throws -> String)?
     var usernameResult: Result<String, Error> = .success("USERNAME")
+
+    var cancelEmailAliasOperationsCalled = false
+    var createEmailAliasCallCount = 0
+    var createEmailAliasHandler: ((String, String, String?) async throws -> EmailAliasResult)?
+    var createEmailAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var deleteEmailAliasResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+    var loadEmailAliasProfileHandler: ((String) async throws -> EmailAliasProfile?)?
+    var loadEmailAliasProfileResult: Result<EmailAliasProfile?, Error> = .success(nil)
+    var reconcileEmailAliasesResult: Result<EmailAliasResult?, Error> = .success(nil)
+    var setEmailAliasEnabledResult: Result<EmailAliasResult, Error> = .failure(EmailAliasError.noCachedAlias)
+
+    private(set) var emailAliasBaseUrl: String?
+    private(set) var emailAliasEnabled: Bool?
+    private(set) var emailAliasHostname: String?
+    private(set) var emailAliasToken: String?
 
     // swiftlint:disable identifier_name
     var getEffectivePasswordGenerationOptionsCalled = false
@@ -59,6 +83,28 @@ class MockGeneratorRepository: GeneratorRepository {
     var usernamePlusAddressEmailResult: Result<String, Error> = .success("user+abcd0123@bitwarden.com")
 
     // MARK: Password History
+
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        boundTarget = target
+        return try boundAliasResult.get()
+    }
+
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try refreshedAliasResult.get()
+    }
+
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult] {
+        try recoveredAliasesResult.get()
+    }
+
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        contactOperation = operation
+        if let contactsHandler { return try await contactsHandler() }
+        return try contactsResult.get()
+    }
 
     func addPasswordHistory(_ passwordHistory: PasswordHistoryView) async throws {
         addPasswordHistoryCalled = true
@@ -92,9 +138,47 @@ class MockGeneratorRepository: GeneratorRepository {
         return try passwordResult.get()
     }
 
-    func generateUsername(settings: UsernameGeneratorRequest) async throws -> String {
+    func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String {
         usernameGeneratorRequest = settings
+        if let generateUsernameHandler { return try await generateUsernameHandler(settings) }
         return try usernameResult.get()
+    }
+
+    func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile? {
+        emailAliasBaseUrl = baseUrl
+        if let loadEmailAliasProfileHandler {
+            return try await loadEmailAliasProfileHandler(baseUrl)
+        }
+        return try loadEmailAliasProfileResult.get()
+    }
+
+    func createEmailAlias(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult {
+        createEmailAliasCallCount += 1
+        emailAliasToken = token
+        emailAliasBaseUrl = baseUrl
+        emailAliasHostname = hostname
+        if let createEmailAliasHandler {
+            return try await createEmailAliasHandler(token, baseUrl, hostname)
+        }
+        return try createEmailAliasResult.get()
+    }
+
+    func setEmailAliasEnabled(_ alias: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult {
+        emailAliasEnabled = enabled
+        return try setEmailAliasEnabledResult.get()
+    }
+
+    func deleteEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try deleteEmailAliasResult.get()
+    }
+
+    func reconcileEmailAliases(baseUrl: String) async throws -> EmailAliasResult? {
+        emailAliasBaseUrl = baseUrl
+        return try reconcileEmailAliasesResult.get()
+    }
+
+    func cancelEmailAliasOperations() async {
+        cancelEmailAliasOperationsCalled = true
     }
 
     func generateUsernamePlusAddressedEmail(email: String) async throws -> String {

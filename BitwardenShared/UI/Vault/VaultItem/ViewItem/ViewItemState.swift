@@ -24,6 +24,20 @@ struct ViewItemState: Equatable, Sendable {
         loadingState.data?.cipher.deletedDate == nil
     }
 
+    /// Account that supplied the displayed cipher; used to reject stale navigation.
+    var ownerUserId: String?
+
+    var boundEmailAlias: BoundEmailAlias? {
+        guard let cipher = loadingState.data?.cipher,
+              cipher.organizationId == nil, cipher.deletedDate == nil,
+              let cipherId = cipher.id, let userId = ownerUserId,
+              let reference = cipher.login?.aliasReference,
+              let parsed = try? parseAliasReference(value: reference),
+              cipher.login?.username == parsed.address
+        else { return nil }
+        return BoundEmailAlias(cipherId: cipherId, userId: userId, reference: reference)
+    }
+
     /// The current state. If this state is not `.loading`, this value will contain an associated value with the
     /// appropriate internal state.
     var loadingState: LoadingState<CipherItemState> = .loading(nil)

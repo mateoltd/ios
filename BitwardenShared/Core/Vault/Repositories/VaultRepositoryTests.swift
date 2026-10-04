@@ -656,7 +656,7 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     func test_createAutofillListExcludedCredentialSection_throws() async throws {
         let cipher = CipherView.fixture()
         cipherService.fetchCipherResult = .success(.fixture(id: "1"))
-        clientService.mockPlatform.mockFido2.decryptFido2AutofillCredentialsThrowableError = BitwardenTestError.example
+        clientService.mockPlatform.mockFido2.getFido2AutofillCredentialsThrowableError = BitwardenTestError.example
 
         await assertAsyncThrows(error: BitwardenTestError.example) {
             _ = try await subject.createAutofillListExcludedCredentialSection(from: cipher)
@@ -1251,6 +1251,7 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     /// `hasMinimumCipherCount(_:)` returns `true` when vault has at least the specified count.
     func test_hasMinimumCipherCount_true() async throws {
         cipherService.cipherCountResult = .success(5)
+        cipherService.fetchAllCiphersResult = .success((0 ..< 5).map { Cipher.fixture(id: String($0)) })
         let hasMinimum = try await subject.hasMinimumCipherCount(5)
         XCTAssertTrue(hasMinimum)
     }
@@ -1258,8 +1259,19 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     /// `hasMinimumCipherCount(_:)` returns `true` when vault has more than the specified count.
     func test_hasMinimumCipherCount_moreThanMinimum() async throws {
         cipherService.cipherCountResult = .success(6)
+        cipherService.fetchAllCiphersResult = .success((0 ..< 6).map { Cipher.fixture(id: String($0)) })
         let hasMinimum = try await subject.hasMinimumCipherCount(5)
         XCTAssertTrue(hasMinimum)
+    }
+
+    /// `hasMinimumCipherCount(_:)` does not count the encrypted alias carrier as a vault item.
+    func test_hasMinimumCipherCount_excludesAliasCarrier() async throws {
+        cipherService.cipherCountResult = .success(5)
+        let visible = (0 ..< 4).map { Cipher.fixture(id: String($0)) }
+        cipherService.fetchAllCiphersResult = try .success(visible + [aliasConnectionCarrierCipher()])
+
+        let hasMinimum = try await subject.hasMinimumCipherCount(5)
+        XCTAssertFalse(hasMinimum)
     }
 
     /// `hasMinimumCipherCount(_:)` returns `false` when vault has fewer than the specified count.
@@ -1280,8 +1292,18 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
     /// `isVaultEmpty()` returns `false` if the user's vault is not empty.
     func test_isVaultEmpty_false() async throws {
         cipherService.cipherCountResult = .success(2)
+        cipherService.fetchAllCiphersResult = .success([.fixture(id: "1"), .fixture(id: "2")])
         let isEmpty = try await subject.isVaultEmpty()
         XCTAssertFalse(isEmpty)
+    }
+
+    /// `isVaultEmpty()` excludes the encrypted alias carrier from the user-visible count.
+    func test_isVaultEmpty_aliasCarrierOnly() async throws {
+        cipherService.cipherCountResult = .success(1)
+        cipherService.fetchAllCiphersResult = try .success([aliasConnectionCarrierCipher()])
+
+        let isEmpty = try await subject.isVaultEmpty()
+        XCTAssertTrue(isEmpty)
     }
 
     /// `isVaultEmpty()` returns `true` if the user's vault is empty.
@@ -1336,6 +1358,42 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
         let sharedCipherIds = cipherService.bulkShareCiphersEncryptionContexts.first?.compactMap(\.cipher.id)
         XCTAssertEqual(sharedCipherIds?.sorted(), ["1", "2", "4"])
         XCTAssertEqual(cipherService.bulkShareCiphersWithServerCollectionIds, ["default-collection-id"])
+    }
+
+    /// Organization migration keeps ordinary notes/logins while excluding private connection credentials.
+    func test_migratePersonalVault_excludesOnlyAliasConnectionCarrier() async throws {
+        let carrier = try CipherView.aliasConnectionFixture()
+        let ordinary = CipherView.fixture(
+            id: "ordinary",
+            name: AliasConnectionSchema.carrierName,
+            secureNote: .init(type: .generic),
+            type: .secureNote,
+        )
+        let login = CipherView.loginFixture(id: "login")
+        cipherService.fetchAllCiphersResult = .success([carrier, ordinary, login].map(Cipher.init(cipherView:)))
+        collectionHelper.orderReturnValue = [
+            .fixture(id: "default", organizationId: "target-org", type: .defaultUserCollection),
+        ]
+        clientCiphers.prepareCiphersForBulkShareReturnValue = []
+
+        try await subject.migratePersonalVault(to: "target-org")
+
+        XCTAssertEqual(clientCiphers.prepareCiphersForBulkShareReceivedArguments?.ciphers, [ordinary, login])
+    }
+
+    /// Migration aborts before sharing any personal data when private-carrier classification cannot decrypt.
+    func test_migratePersonalVault_unreadableCarrierFailsClosed() async throws {
+        cipherService.fetchAllCiphersResult = try .success([Cipher(cipherView: .aliasConnectionFixture())])
+        collectionHelper.orderReturnValue = [
+            .fixture(id: "default", organizationId: "target-org", type: .defaultUserCollection),
+        ]
+        clientCiphers.decryptClosure = { _ in throw BitwardenTestError.example }
+
+        await assertAsyncThrows(error: BitwardenTestError.example) {
+            try await self.subject.migratePersonalVault(to: "target-org")
+        }
+        XCTAssertNil(clientCiphers.prepareCiphersForBulkShareReceivedArguments)
+        XCTAssertTrue(cipherService.bulkShareCiphersEncryptionContexts.isEmpty)
     }
 
     /// `migratePersonalVault(to:)` does nothing when there are no personal vault items.
@@ -1964,11 +2022,27 @@ class VaultRepositoryTests: BitwardenTestCase { // swiftlint:disable:this type_b
 
     // MARK: Private
 
+    private func aliasConnectionCarrierCipher() throws -> Cipher {
+        let connection = SimpleLoginAliasAdapter.makeConnection(
+            connectionId: "11111111-1111-4111-8111-111111111111",
+        )
+        let view = try AliasConnectionVaultCodec.encode(AliasConnectionVaultPayload(
+            version: AliasConnectionSchema.version,
+            connection: connection,
+            credential: AliasConnectionCredential(
+                token: "encrypted-provider-token",
+                baseUrl: "https://app.simplelogin.io/",
+            ),
+            journal: AliasJournal(version: 1, connectionId: connection.connectionId, events: []),
+        ))
+        return Cipher(cipherView: view)
+    }
+
     private func setupDefaultDecryptFido2AutofillCredentialsMocker(
         expectedCredentialId: Data,
         cipherIdToReturnEmptyFido2Credentials: String? = nil,
     ) {
-        clientService.mockPlatform.mockFido2.decryptFido2AutofillCredentialsClosure = { cipherView in
+        clientService.mockPlatform.mockFido2.getFido2AutofillCredentialsClosure = { cipherView in
             guard let cipherId = cipherView.id,
                   cipherId != cipherIdToReturnEmptyFido2Credentials else {
                 return []

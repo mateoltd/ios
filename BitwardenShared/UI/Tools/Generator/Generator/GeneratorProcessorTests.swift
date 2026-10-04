@@ -23,6 +23,7 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
     var reviewPromptService: MockReviewPromptService!
     var stateService: MockStateService!
     var subject: GeneratorProcessor!
+    var vaultTimeoutService: MockVaultTimeoutService!
 
     // MARK: Setup & Teardown
 
@@ -39,6 +40,8 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         policyService = MockPolicyService()
         reviewPromptService = MockReviewPromptService()
         stateService = MockStateService()
+        vaultTimeoutService = MockVaultTimeoutService()
+        vaultTimeoutService.vaultLockStatusSubject.send(VaultLockStatus(isVaultLocked: false, userId: "1"))
 
         setUpSubject()
     }
@@ -56,6 +59,7 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         reviewPromptService = nil
         stateService = nil
         subject = nil
+        vaultTimeoutService = nil
     }
 
     @MainActor
@@ -71,9 +75,208 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
                 policyService: policyService,
                 reviewPromptService: reviewPromptService,
                 stateService: stateService,
+                vaultTimeoutService: vaultTimeoutService,
             ),
             state: state,
         )
+    }
+
+    private func aliasResult(
+        status: EmailAliasLifecycleStatus = .enabled,
+        reference: String = "alias-reference",
+    ) -> EmailAliasResult {
+        EmailAliasResult(
+            address: "alias@example.com",
+            reference: reference,
+            identity: AliasIdentity(
+                version: 1,
+                connectionId: "11111111-1111-4111-8111-111111111111",
+                aliasId: "42",
+                address: "alias@example.com",
+            ),
+            status: status,
+            ownerUserId: "1",
+        )
+    }
+
+    /// Managing a saved alias reads its binding and never loads generator options or creates an alias.
+    @MainActor
+    func test_appeared_boundAliasDoesNotGenerate() async {
+        let target = BoundEmailAlias(cipherId: "saved", userId: "1", reference: "alias-reference")
+        generatorRepository.boundAliasResult = .success(aliasResult())
+        setUpSubject(state: GeneratorState(generatorType: .username, boundAlias: target, presentationMode: .inPlace))
+        await subject.perform(.appeared)
+        XCTAssertEqual(generatorRepository.boundTarget, target)
+        XCTAssertEqual(subject.state.emailAliasResult, aliasResult())
+        subject.receive(.refreshGeneratedValue)
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 0)
+    }
+
+    /// Disappearance revokes management authorization: reopening the saved item must reprompt again.
+    @MainActor
+    func test_boundAlias_disappearanceRequiresReopeningItem() async {
+        let target = BoundEmailAlias(cipherId: "saved", userId: "1", reference: "alias-reference")
+        generatorRepository.boundAliasResult = .success(aliasResult())
+        setUpSubject(state: GeneratorState(generatorType: .username, boundAlias: target, presentationMode: .inPlace))
+        await subject.perform(.appeared)
+        subject.receive(.viewDisappeared)
+        await subject.perform(.appeared)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertTrue(subject.state.boundAliasSessionEnded)
+        subject.receive(.dismissPressed)
+        XCTAssertEqual(coordinator.routes.last, .dismiss)
+    }
+
+    /// Explicit recovery selects an observed identity while leaving uncertain creation blocked.
+    @MainActor
+    func test_recovery_selectsObservedAliasWithoutCreating() async throws {
+        await subject.perform(.appeared)
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.aliasRecoveryNeeded = true
+        generatorRepository.recoveredAliasesResult = .success([aliasResult()])
+        subject.receive(.reconcileEmailAliases)
+        try await waitForAsync { !self.subject.state.recoveredAliases.isEmpty }
+        try await waitForAsync { !self.subject.state.isAliasBusy }
+        subject.receive(.selectRecoveredAlias(aliasResult()))
+        subject.receive(.refreshGeneratedValue)
+        XCTAssertEqual(subject.state.generatedValue, "alias@example.com")
+        XCTAssertTrue(subject.state.aliasRecoveryNeeded)
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 0)
+    }
+
+    /// A destructive request waits for confirmation; a stale confirmation is rejected.
+    @MainActor
+    func test_deleteAlias_staleConfirmationCannotDelete() async throws {
+        await subject.perform(.appeared)
+        subject.state.emailAliasResult = aliasResult()
+        generatorRepository.deleteEmailAliasResult = .success(aliasResult(status: .deleted))
+        subject.receive(.deleteEmailAlias)
+        XCTAssertFalse(subject.state.isAliasBusy)
+        let alert = try XCTUnwrap(coordinator.alertShown.last)
+        subject.receive(.viewDisappeared)
+        try await alert.tapAction(title: Localizations.delete)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertFalse(subject.state.isAliasBusy)
+    }
+
+    /// The accepted provider result remains visible with its acknowledgement recovery warning.
+    @MainActor
+    func test_createAlias_surfacesJournalPersistenceFailure() async {
+        await subject.perform(.appeared)
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        var alias = aliasResult()
+        alias.journalPersistenceFailed = true
+        generatorRepository.createEmailAliasResult = .success(alias)
+        await subject.generateUsername()
+        XCTAssertEqual(subject.state.emailAliasResult, alias)
+        XCTAssertEqual(subject.state.generatedValue, alias.address)
+        XCTAssertTrue(subject.state.aliasRecoveryNeeded)
+    }
+
+    /// A late contact error cannot restore recovery state after the screen has closed.
+    @MainActor
+    func test_contactFailureAfterDisappearanceDoesNotRestoreRecoveryState() async throws {
+        let providerStarted = expectation(description: "contact request started")
+        let providerFinished = expectation(description: "contact request finished")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.contactsHandler = {
+            providerStarted.fulfill()
+            await gate.wait()
+            defer { providerFinished.fulfill() }
+            throw EmailAliasError.operationOutcomeUnknown
+        }
+        await subject.perform(.appeared)
+        subject.state.emailAliasResult = aliasResult()
+        subject.receive(.aliasContacts(.create(recipient: "person@example.com")))
+        await fulfillment(of: [providerStarted], timeout: 1)
+        subject.receive(.viewDisappeared)
+        await gate.resume()
+        await fulfillment(of: [providerFinished], timeout: 1)
+        await Task.yield()
+
+        XCTAssertFalse(subject.state.aliasContactRecoveryNeeded)
+        XCTAssertFalse(subject.state.aliasRecoveryNeeded)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertTrue(subject.state.aliasContacts.isEmpty)
+        XCTAssertTrue(coordinator.alertShown.isEmpty)
+    }
+
+    /// Contact results are cleared on vault lock along with recipients and outgoing mail URLs.
+    @MainActor
+    func test_vaultLock_clearsContactState() async throws {
+        await subject.perform(.appeared)
+        let alias = aliasResult()
+        subject.state.emailAliasResult = alias
+        subject.state.aliasContacts = [
+            SendReplyIdentity(
+                alias: alias.identity,
+                identityId: "7",
+                recipient: "person@example.com",
+                address: "reverse@example.com",
+                valid: true,
+                blocked: false,
+            ),
+        ]
+        subject.state.aliasRecipient = "person@example.com"
+        subject.state.url = URL(string: "mailto:reverse@example.com")
+        vaultTimeoutService.vaultLockStatusSubject.send(VaultLockStatus(isVaultLocked: true, userId: "1"))
+        try await waitForAsync { self.subject.state.aliasContacts.isEmpty }
+        XCTAssertEqual(subject.state.aliasRecipient, "")
+        XCTAssertNil(subject.state.url)
+    }
+
+    /// Compose addresses only the selected reverse alias; provider text cannot become mail headers.
+    @MainActor
+    func test_contactCompose_encodesReverseAddressAndRejectsStaleAccount() async throws {
+        stateService.activeAccount = .fixture(profile: .fixture(userId: "1"))
+        stateService.activeIdSubject.send("1")
+        setUpSubject()
+        await subject.perform(.appeared)
+        var alias = aliasResult()
+        alias.ownerUserId = "1"
+        let contact = SendReplyIdentity(
+            alias: alias.identity,
+            identityId: "7",
+            recipient: "person@example.com",
+            address: "reverse@example.com?bcc=other@example.com",
+            valid: true,
+            blocked: false,
+        )
+        subject.state.emailAliasResult = alias
+        subject.state.aliasContacts = [contact]
+        subject.receive(.composeAliasContact(contact))
+        try await waitForAsync { self.subject.state.url != nil }
+        let url = try XCTUnwrap(subject.state.url)
+        XCTAssertEqual(url.scheme, "mailto")
+        XCTAssertNil(url.query)
+        XCTAssertTrue(url.absoluteString.contains("%3F"))
+        stateService.activeAccount = .fixture(profile: .fixture(userId: "2"))
+        stateService.activeIdSubject.send("2")
+        try await waitForAsync { self.subject.state.emailAliasResult == nil }
+        subject.receive(.copyAliasContact(contact))
+        XCTAssertNil(subject.state.url)
+        XCTAssertNil(pasteboardService.copiedString)
+    }
+
+    /// Unknown creation without an address cannot fill a placeholder or repeat creation.
+    @MainActor
+    func test_unknownCreationWithoutAliasCannotFillPlaceholder() async {
+        await subject.perform(.appeared)
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        generatorRepository.createEmailAliasResult = .failure(EmailAliasError.operationOutcomeUnknown)
+        await subject.generateUsername()
+        subject.receive(.fillGeneratedValue)
+        XCTAssertEqual(subject.state.generatedValue, "")
+        XCTAssertTrue(subject.state.aliasRecoveryNeeded)
+        XCTAssertTrue(coordinator.routes.isEmpty)
+        subject.receive(.refreshGeneratedValue)
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 1)
     }
 
     // MARK: Tests
@@ -724,11 +927,316 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
 
         XCTAssertEqual(
             generatorRepository.usernameGeneratorRequest,
-            UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+            AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
         )
 
         XCTAssertEqual(subject.state.generatedValue, "USERNAME")
         XCTAssertFalse(generatorRepository.addPasswordHistoryCalled)
+    }
+
+    /// Opening the SimpleLogin generator reads only encrypted local state and never creates an alias.
+    @MainActor
+    func test_perform_appeared_simpleLoginDoesNotContactProvider() async {
+        generatorRepository.getUsernameGenerationOptionsResult = .success(UsernameGenerationOptions(
+            serviceType: .simpleLogin,
+            simpleLoginApiKey: "encrypted-token",
+            simpleLoginBaseUrl: "https://app.simplelogin.io/",
+            type: .forwardedEmail,
+        ))
+        setUpSubject(state: GeneratorState(generatorType: .username))
+
+        await subject.perform(.appeared)
+
+        XCTAssertTrue(subject.state.isSimpleLoginAlias)
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 0)
+        XCTAssertNil(generatorRepository.usernameGeneratorRequest)
+        XCTAssertEqual(generatorRepository.emailAliasBaseUrl, "https://app.simplelogin.io/")
+    }
+
+    /// A local profile read cannot restore a token after the generator has disappeared.
+    @MainActor
+    func test_perform_appeared_discardsProfileAfterDisappearance() async throws {
+        generatorRepository.getUsernameGenerationOptionsResult = .success(UsernameGenerationOptions(
+            serviceType: .simpleLogin,
+            simpleLoginBaseUrl: "https://app.simplelogin.io/",
+            type: .forwardedEmail,
+        ))
+        let profileStarted = expectation(description: "profile started")
+        let gate = GeneratorAliasCallGate()
+        let profile = EmailAliasProfile(
+            token: "encrypted-token",
+            baseUrl: "https://app.simplelogin.io/",
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            cachedAlias: aliasResult(),
+        )
+        generatorRepository.loadEmailAliasProfileHandler = { _ in
+            profileStarted.fulfill()
+            await gate.wait()
+            return profile
+        }
+        setUpSubject(state: GeneratorState(generatorType: .username))
+        let operation = Task { await self.subject.perform(.appeared) }
+        await fulfillment(of: [profileStarted], timeout: 1)
+
+        subject.receive(.viewDisappeared)
+        await gate.resume()
+        await operation.value
+
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.generatedValue, "")
+    }
+
+    /// A late failure cannot restore recovery UI or show an alert after the screen ends its session.
+    @MainActor
+    func test_generateUsername_discardsLateFailureAfterDisappearance() async throws {
+        let providerStarted = expectation(description: "provider started")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.createEmailAliasHandler = { _, _, _ in
+            providerStarted.fulfill()
+            await gate.wait()
+            throw EmailAliasError.operationOutcomeUnknown
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        let operation = Task { await self.subject.generateUsername() }
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        subject.receive(.viewDisappeared)
+        await gate.resume()
+        await operation.value
+
+        XCTAssertFalse(subject.state.aliasRecoveryNeeded)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+        XCTAssertTrue(coordinator.alertShown.isEmpty)
+    }
+
+    /// Create-only providers also discard late output when the view session has changed.
+    @MainActor
+    func test_generateUsername_discardsForwardedResultAfterDisappearance() async throws {
+        let providerStarted = expectation(description: "provider started")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.generateUsernameHandler = { _ in
+            providerStarted.fulfill()
+            await gate.wait()
+            return "late@duck.com"
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .duckDuckGo
+        subject.state.usernameState.duckDuckGoAPIKey = "token"
+        let operation = Task { await self.subject.generateUsername() }
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        subject.receive(.viewDisappeared)
+        let clearedValue = subject.state.generatedValue
+        await gate.resume()
+        await operation.value
+
+        XCTAssertEqual(subject.state.generatedValue, clearedValue)
+        XCTAssertNotEqual(subject.state.generatedValue, "late@duck.com")
+        XCTAssertTrue(coordinator.alertShown.isEmpty)
+    }
+
+    /// Provider changes cancel in-flight creation even though they never trigger another creation.
+    @MainActor
+    func test_receive_providerChangeCancelsInFlightAlias() async throws {
+        let providerStarted = expectation(description: "provider started")
+        let providerCancelled = expectation(description: "provider cancelled")
+        let providerReturned = expectation(description: "provider returned")
+        let gate = GeneratorAliasCallGate()
+        let result = aliasResult()
+        generatorRepository.createEmailAliasHandler = { _, _, _ in
+            await withTaskCancellationHandler {
+                providerStarted.fulfill()
+                await gate.wait()
+            } onCancel: {
+                providerCancelled.fulfill()
+            }
+            providerReturned.fulfill()
+            return result
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        subject.receive(.refreshGeneratedValue)
+        await fulfillment(of: [providerStarted], timeout: 1)
+
+        subject.receive(.usernameForwardedEmailServiceChanged(.duckDuckGo))
+        await fulfillment(of: [providerCancelled], timeout: 1)
+        await gate.resume()
+        await fulfillment(of: [providerReturned], timeout: 1)
+
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 1)
+        XCTAssertEqual(subject.state.usernameState.forwardedEmailService, .duckDuckGo)
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.generatedValue, "")
+    }
+
+    /// Focusing or editing SimpleLogin fields never creates an alias; creation requires refresh.
+    @MainActor
+    func test_receive_simpleLoginFieldChangesDoNotContactProvider() {
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        let field = FormTextField<GeneratorState>(
+            keyPath: \.usernameState.simpleLoginAPIKey,
+            title: Localizations.apiKeyRequiredParenthesis,
+            value: "",
+        )
+
+        subject.receive(.textFieldFocusChanged(keyPath: \.usernameState.simpleLoginAPIKey))
+        subject.receive(.textValueChanged(field: field, value: "token"))
+        subject.receive(.textFieldFocusChanged(keyPath: nil))
+
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 0)
+        XCTAssertNil(generatorRepository.usernameGeneratorRequest)
+        XCTAssertEqual(subject.state.generatedValue, "")
+    }
+
+    /// Refresh is the single explicit action that creates a SimpleLogin alias.
+    @MainActor
+    func test_receive_refreshGeneratedValue_simpleLoginCreatesOnce() {
+        let result = aliasResult()
+        generatorRepository.createEmailAliasResult = .success(result)
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        subject.state.usernameState.simpleLoginSelfHostServerUrl = "https://app.simplelogin.io/"
+
+        subject.receive(.refreshGeneratedValue)
+
+        waitFor { generatorRepository.createEmailAliasCallCount == 1 }
+        waitFor { subject.state.emailAliasResult == result }
+        XCTAssertEqual(subject.state.generatedValue, "alias@example.com")
+        XCTAssertEqual(generatorRepository.emailAliasToken, "token")
+    }
+
+    /// An offline unknown outcome may reuse a cached unbound alias but never queues another creation.
+    @MainActor
+    func test_receive_refreshGeneratedValue_simpleLoginOfflineCachedReuse() {
+        let result = aliasResult(status: .unknown)
+        generatorRepository.createEmailAliasResult = .success(result)
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+
+        subject.receive(.refreshGeneratedValue)
+
+        waitFor { subject.state.emailAliasResult == result }
+        XCTAssertEqual(generatorRepository.createEmailAliasCallCount, 1)
+        XCTAssertEqual(subject.state.generatedValue, result.address)
+    }
+
+    /// A late provider callback cannot repopulate decrypted state after dismissal.
+    @MainActor
+    func test_receive_dismissPressed_ignoresLateAliasCallback() async throws {
+        let result = aliasResult()
+        let providerStarted = expectation(description: "provider started")
+        let providerFinished = expectation(description: "provider finished")
+        let gate = GeneratorAliasCallGate()
+        generatorRepository.createEmailAliasHandler = { _, _, _ in
+            providerStarted.fulfill()
+            await gate.wait()
+            defer { providerFinished.fulfill() }
+            return result
+        }
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.usernameState.usernameGeneratorType = .forwardedEmail
+        subject.state.usernameState.forwardedEmailService = .simpleLogin
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+
+        subject.receive(.refreshGeneratedValue)
+        await fulfillment(of: [providerStarted], timeout: 1)
+        subject.receive(.dismissPressed)
+        await gate.resume()
+        await fulfillment(of: [providerFinished], timeout: 1)
+        await Task.yield()
+
+        XCTAssertNil(subject.state.emailAliasResult)
+        XCTAssertEqual(subject.state.generatedValue, "")
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+        XCTAssertTrue(generatorRepository.cancelEmailAliasOperationsCalled)
+        XCTAssertEqual(coordinator.routes.last, .cancel)
+    }
+
+    /// Locking clears decrypted alias state and revokes ownership of in-flight UI results.
+    @MainActor
+    func test_vaultLock_clearsDecryptedAliasState() async throws {
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        subject.state.generatorType = .username
+        subject.state.emailAliasResult = aliasResult()
+        subject.state.generatedValue = "alias@example.com"
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        await Task.yield()
+
+        vaultTimeoutService.vaultLockStatusSubject.send(VaultLockStatus(isVaultLocked: true, userId: "1"))
+
+        try await waitForAsync { self.subject.state.emailAliasResult == nil }
+        XCTAssertEqual(subject.state.generatedValue, "")
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+        XCTAssertTrue(generatorRepository.cancelEmailAliasOperationsCalled)
+    }
+
+    /// Logout and account switches clear view-owned decrypted alias state.
+    @MainActor
+    func test_accountSwitchAndLogout_clearDecryptedAliasState() async throws {
+        try await waitForAsync { self.subject.didLoadGeneratorOptions }
+        stateService.activeIdSubject.send("account-1")
+        try await waitForAsync { self.generatorRepository.cancelEmailAliasOperationsCalled }
+        generatorRepository.cancelEmailAliasOperationsCalled = false
+        subject.state.emailAliasResult = aliasResult()
+        subject.state.generatedValue = "alias@example.com"
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+
+        stateService.activeIdSubject.send("account-2")
+
+        try await waitForAsync { self.subject.state.emailAliasResult == nil }
+        XCTAssertEqual(subject.state.generatedValue, "")
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+
+        subject.state.emailAliasResult = aliasResult()
+        subject.state.generatedValue = "alias@example.com"
+        subject.state.usernameState.simpleLoginAPIKey = "token"
+        generatorRepository.cancelEmailAliasOperationsCalled = false
+        stateService.activeIdSubject.send(nil)
+
+        try await waitForAsync { self.subject.state.emailAliasResult == nil }
+        XCTAssertEqual(subject.state.generatedValue, "")
+        XCTAssertEqual(subject.state.usernameState.simpleLoginAPIKey, "")
+    }
+
+    /// Selecting a generated alias carries the canonical binding alongside the username.
+    @MainActor
+    func test_receive_fillGeneratedValue_emailAliasIncludesReference() async throws {
+        stateService.activeAccount = .fixture(profile: .fixture(userId: "1"))
+        stateService.activeIdSubject.send("1")
+        setUpSubject()
+        await subject.perform(.appeared)
+        subject.state.generatorType = .username
+        subject.state.generatedValue = "alias@example.com"
+        subject.state.emailAliasResult = aliasResult(reference: "canonical-reference")
+
+        subject.receive(.fillGeneratedValue)
+        try await waitForAsync { !self.coordinator.routes.isEmpty }
+
+        XCTAssertEqual(
+            coordinator.routes.last,
+            .complete(
+                type: .username,
+                value: "alias@example.com",
+                aliasReference: "canonical-reference",
+            ),
+        )
     }
 
     /// `receive(_:)` with `.showPasswordHistory` asks the coordinator to show the password history.
@@ -852,7 +1360,7 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         waitFor { subject.state.generatedValue == "USERNAME" }
         XCTAssertEqual(
             generatorRepository.usernameGeneratorRequest,
-            UsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
+            AppUsernameGeneratorRequest.subaddress(type: .random, email: "user@bitwarden.com"),
         )
         XCTAssertEqual(subject.state.generatedValue, "USERNAME")
     }
@@ -1302,5 +1810,21 @@ class GeneratorProcessorTests: BitwardenTestCase { // swiftlint:disable:this typ
         XCTAssertGreaterThanOrEqual(Int(request.length), 20)
         // Special must be enabled and its minimum raised to the rules floor.
         XCTAssertTrue(subject.state.passwordState.containsSpecial)
+    }
+}
+
+private actor GeneratorAliasCallGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var resumed = false
+
+    func wait() async {
+        if resumed { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resume() {
+        resumed = true
+        continuation?.resume()
+        continuation = nil
     }
 }

@@ -59,6 +59,21 @@ class GeneratorCoordinatorTests: BitwardenTestCase {
         XCTAssertEqual(delegate.didCompleteGeneratorValue, "email@example.com")
     }
 
+    /// Alias completion forwards the binding before preserving the existing completion callback.
+    @MainActor
+    func test_navigateTo_completeWithAliasReference() {
+        subject.navigate(to: .complete(
+            type: .username,
+            value: "alias@example.com",
+            aliasReference: "canonical-reference",
+        ))
+
+        XCTAssertEqual(delegate.didCreateEmailAliasReference, "canonical-reference")
+        XCTAssertTrue(delegate.didCompleteGeneratorCalled)
+        XCTAssertEqual(delegate.didCompleteGeneratorValue, "alias@example.com")
+        XCTAssertEqual(delegate.aliasReferenceAtCompletion, "canonical-reference")
+    }
+
     /// `navigate(to:)` with `.generator` and a delegate pushes the generator view onto the stack
     /// navigator.
     @MainActor
@@ -204,14 +219,33 @@ class MockGeneratorCoordinatorDelegate: GeneratorCoordinatorDelegate {
     var didCompleteGeneratorCalled = false
     var didCompleteGeneratorType: GeneratorType?
     var didCompleteGeneratorValue: String?
+    var didCreateEmailAliasReference: String?
+    var aliasReferenceAtCompletion: String?
 
     func didCancelGenerator() {
         didCancelGeneratorCalled = true
     }
 
     func didCompleteGenerator(for type: GeneratorType, with value: String) {
+        aliasReferenceAtCompletion = didCreateEmailAliasReference
         didCompleteGeneratorCalled = true
         didCompleteGeneratorType = type
         didCompleteGeneratorValue = value
+    }
+
+    func didCreateEmailAlias(reference: String) {
+        didCreateEmailAliasReference = reference
+    }
+}
+
+extension GeneratorCoordinatorTests {
+    @MainActor
+    func test_navigateTo_manageEmailAlias_preservesSavedTarget() throws {
+        subject.navigate(to: .manageEmailAlias(cipherId: "saved", userId: "1", reference: "reference"))
+        let action = try XCTUnwrap(stackNavigator.actions.last)
+        let store = try XCTUnwrap((action.view as? GeneratorView)?.store)
+        XCTAssertEqual(store.state.boundAlias, BoundEmailAlias(cipherId: "saved", userId: "1", reference: "reference"))
+        XCTAssertEqual(store.state.presentationMode, .inPlace)
+        XCTAssertFalse(store.state.savePasswordHistory)
     }
 }

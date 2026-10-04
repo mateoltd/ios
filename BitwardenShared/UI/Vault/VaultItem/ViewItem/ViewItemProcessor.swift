@@ -195,6 +195,11 @@ final class ViewItemProcessor: StateProcessor<ViewItemState, ViewItemAction, Vie
             confirmDownload(attachment)
         case let .driversLicenseItemAction(action):
             handleDriversLicenseAction(action)
+        case .manageEmailAlias:
+            guard let target = state.boundEmailAlias else { return }
+            coordinator.navigate(to: .manageEmailAlias(
+                cipherId: target.cipherId, userId: target.userId, reference: target.reference,
+            ))
         case .editPressed:
             editItem()
         case let .morePressed(menuAction):
@@ -660,6 +665,7 @@ private extension ViewItemProcessor {
     private func streamCipherDetails() async {
         do {
             await services.eventService.collect(eventType: .cipherClientViewed, cipherId: itemId)
+            let ownerUserId = try await services.stateService.getActiveAccountId()
             for try await cipher in try await services.vaultRepository.cipherDetailsPublisher(id: itemId) {
                 guard let cipher else { continue }
 
@@ -703,6 +709,8 @@ private extension ViewItemProcessor {
 
                 // Carry over any toast, so that a toast shown in response to saving the item isn't
                 // cleared out from under the user by the cipher update that the save triggers.
+                guard try await (services.stateService.getActiveAccountId()) == ownerUserId else { return }
+                newState.ownerUserId = ownerUserId
                 newState.toast = state.toast
                 state = newState
             }

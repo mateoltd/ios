@@ -16,9 +16,16 @@ protocol GeneratorCoordinatorDelegate: AnyObject {
     ///
     func didCompleteGenerator(for type: GeneratorType, with value: String)
 
+    /// Called before completion when a generated username has a canonical alias reference.
+    func didCreateEmailAlias(reference: String)
+
     /// Called when the generator flow has been canceled.
     ///
     func didCancelGenerator()
+}
+
+extension GeneratorCoordinatorDelegate {
+    func didCreateEmailAlias(reference _: String) {}
 }
 
 // MARK: - GeneratorCoordinator
@@ -40,6 +47,7 @@ final class GeneratorCoordinator: Coordinator, HasStackNavigator {
         & HasPolicyService
         & HasReviewPromptService
         & HasStateService
+        & HasVaultTimeoutService
 
     // MARK: Private Properties
 
@@ -85,7 +93,10 @@ final class GeneratorCoordinator: Coordinator, HasStackNavigator {
         switch route {
         case .cancel:
             delegate?.didCancelGenerator()
-        case let .complete(type, value):
+        case let .complete(type, value, aliasReference):
+            if let aliasReference {
+                delegate?.didCreateEmailAlias(reference: aliasReference)
+            }
             delegate?.didCompleteGenerator(for: type, with: value)
         case .dismiss:
             stackNavigator?.dismiss()
@@ -96,6 +107,16 @@ final class GeneratorCoordinator: Coordinator, HasStackNavigator {
                 passwordRules: passwordRules,
                 savePasswordHistory: savePasswordHistory,
             )
+        case let .manageEmailAlias(cipherId, userId, reference):
+            let state = GeneratorState(
+                generatorType: .username,
+                boundAlias: BoundEmailAlias(cipherId: cipherId, userId: userId, reference: reference),
+                presentationMode: .inPlace,
+                savePasswordHistory: false,
+                usernameState: .init(usernameGeneratorType: .forwardedEmail, forwardedEmailService: .simpleLogin),
+            )
+            let processor = GeneratorProcessor(coordinator: asAnyCoordinator(), services: services, state: state)
+            stackNavigator?.replace(GeneratorView(store: Store(processor: processor)))
         case .generatorHistory:
             showGeneratorHistory()
         }

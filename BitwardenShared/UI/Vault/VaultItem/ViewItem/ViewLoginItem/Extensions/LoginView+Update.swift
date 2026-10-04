@@ -13,6 +13,7 @@ extension BitwardenSdk.LoginView {
         self.init(
             username: loginState.username.nilIfEmpty,
             password: loginState.password.nilIfEmpty,
+            aliasReference: loginState.aliasReference,
             passwordRevisionDate: loginState.passwordUpdatedDate ?? loginView?.passwordRevisionDate,
             uris: loginState.uris.compactMap(\.loginUriView).nilIfEmpty,
             totp: loginState.authenticatorKey.nilIfEmpty,

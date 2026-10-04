@@ -338,6 +338,7 @@ extension AddEditSendItemState {
             type: sdkType,
             file: type == .file ? newFileView() : nil,
             text: type == .text ? newTextView() : nil,
+            data: nil, // This editor accepts text and file sends only; item sends fail the type guard.
             maxAccessCount: maximumAccessCount == 0 ? nil : UInt32(maximumAccessCount),
             accessCount: 0, // Defaulting to `0`, since the API ignores the values we set here.
             disabled: isDeactivateThisSendOn,

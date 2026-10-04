@@ -52,7 +52,33 @@ protocol GeneratorRepository: AnyObject {
     /// - Parameter settings: The settings used to generate the username.
     /// - Returns: The generated username.
     ///
-    func generateUsername(settings: UsernameGeneratorRequest) async throws -> String
+    func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String
+
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult]
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity]
+
+    /// Loads a SimpleLogin profile and cached alias only from the encrypted local vault.
+    func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile?
+
+    /// Creates a SimpleLogin alias in response to an explicit user action.
+    func createEmailAlias(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult
+
+    /// Explicitly changes an alias's forwarding state.
+    func setEmailAliasEnabled(_ alias: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult
+
+    /// Explicitly deletes an alias.
+    func deleteEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult
+
+    /// Explicitly reconciles provider and encrypted vault state.
+    func reconcileEmailAliases(baseUrl: String) async throws -> EmailAliasResult?
+
+    /// Cancels provider operations and clears decrypted alias state.
+    func cancelEmailAliasOperations() async
 
     /// Gets the user's saved password generation options with policy and password rules applied.
     ///
@@ -124,6 +150,12 @@ class DefaultGeneratorRepository {
     /// The service used by the application to report non-fatal errors.
     let errorReporter: ErrorReporter
 
+    /// The service that owns encrypted alias connection state and explicit provider operations.
+    let emailAliasService: EmailAliasService
+
+    /// The isolated boundary for existing create-only forwarded-email services.
+    let forwardedEmailAliasGenerator: ForwardedEmailAliasGenerator
+
     /// The service used for evaluating policy.
     let policyService: PolicyService
 
@@ -144,13 +176,17 @@ class DefaultGeneratorRepository {
     init(
         clientService: ClientService,
         dataStore: GeneratorDataStore,
+        emailAliasService: EmailAliasService,
         errorReporter: ErrorReporter,
+        forwardedEmailAliasGenerator: ForwardedEmailAliasGenerator = ForwardedEmailAliasGenerator(),
         policyService: PolicyService,
         stateService: StateService,
     ) {
         self.clientService = clientService
         self.dataStore = dataStore
+        self.emailAliasService = emailAliasService
         self.errorReporter = errorReporter
+        self.forwardedEmailAliasGenerator = forwardedEmailAliasGenerator
         self.policyService = policyService
         self.stateService = stateService
     }
@@ -232,8 +268,55 @@ extension DefaultGeneratorRepository: GeneratorRepository {
         try await clientService.generators().password(settings: settings)
     }
 
-    func generateUsername(settings: UsernameGeneratorRequest) async throws -> String {
-        try await clientService.generators().username(settings: settings)
+    func generateUsername(settings: AppUsernameGeneratorRequest) async throws -> String {
+        if case let .forwarded(service, website) = settings {
+            return try await forwardedEmailAliasGenerator.generate(service: service, website: website)
+        }
+        guard let sdkRequest = settings.sdkRequest else { throw EmailAliasError.invalidConfiguration }
+        return try await clientService.generators().username(settings: sdkRequest)
+    }
+
+    func loadBoundEmailAlias(_ target: BoundEmailAlias) async throws -> EmailAliasResult {
+        try await emailAliasService.loadBoundAlias(target)
+    }
+
+    func refreshEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try await emailAliasService.refreshAlias(alias)
+    }
+
+    func recoverEmailAliases(baseUrl: String) async throws -> [EmailAliasResult] {
+        try await emailAliasService.recoverAliases(baseUrl: baseUrl)
+    }
+
+    func emailAliasContacts(
+        _ alias: EmailAliasResult,
+        operation: EmailAliasContactOperation,
+    ) async throws -> [SendReplyIdentity] {
+        try await emailAliasService.contacts(alias, operation: operation)
+    }
+
+    func loadEmailAliasProfile(baseUrl: String) async throws -> EmailAliasProfile? {
+        try await emailAliasService.loadProfile(baseUrl: baseUrl)
+    }
+
+    func createEmailAlias(token: String, baseUrl: String, hostname: String?) async throws -> EmailAliasResult {
+        try await emailAliasService.createAlias(token: token, baseUrl: baseUrl, hostname: hostname)
+    }
+
+    func setEmailAliasEnabled(_ alias: EmailAliasResult, enabled: Bool) async throws -> EmailAliasResult {
+        try await emailAliasService.setAliasEnabled(alias, enabled: enabled)
+    }
+
+    func deleteEmailAlias(_ alias: EmailAliasResult) async throws -> EmailAliasResult {
+        try await emailAliasService.deleteAlias(alias)
+    }
+
+    func reconcileEmailAliases(baseUrl: String) async throws -> EmailAliasResult? {
+        try await emailAliasService.reconcile(baseUrl: baseUrl)
+    }
+
+    func cancelEmailAliasOperations() async {
+        await emailAliasService.cancelAndClear()
     }
 
     func getEffectivePasswordGenerationOptions(
@@ -266,6 +349,11 @@ extension DefaultGeneratorRepository: GeneratorRepository {
         if options.plusAddressedEmail.isEmptyOrNil {
             options.plusAddressedEmail = try? await stateService.getActiveAccount().profile.email
         }
+        if options.serviceType == .simpleLogin,
+           let profile = try await emailAliasService.loadProfile(baseUrl: options.simpleLoginBaseUrl ?? "") {
+            options.simpleLoginApiKey = profile.token
+            options.simpleLoginBaseUrl = profile.baseUrl
+        }
         return options
     }
 
@@ -284,6 +372,8 @@ extension DefaultGeneratorRepository: GeneratorRepository {
     }
 
     func setUsernameGenerationOptions(_ options: UsernameGenerationOptions) async throws {
-        try await stateService.setUsernameGenerationOptions(options)
+        var nonSecretOptions = options
+        nonSecretOptions.simpleLoginApiKey = nil
+        try await stateService.setUsernameGenerationOptions(nonSecretOptions)
     }
 }

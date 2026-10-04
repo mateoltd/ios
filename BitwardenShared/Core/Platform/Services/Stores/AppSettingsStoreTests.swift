@@ -41,6 +41,17 @@ class AppSettingsStoreTests: BitwardenTestCase { // swiftlint:disable:this type_
 
     // MARK: Tests
 
+    /// Migration eligibility survives store recreation, stays account-scoped, and can be cleared.
+    func test_migrationGracePeriodStart_persistenceAndIsolation() {
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        subject.setV2EncryptedMigrationsGracePeriodStart(start, userId: "1")
+        let reopened = DefaultAppSettingsStore(userDefaults: userDefaults)
+        XCTAssertEqual(reopened.v2EncryptedMigrationsGracePeriodStart(userId: "1"), start)
+        XCTAssertNil(reopened.v2EncryptedMigrationsGracePeriodStart(userId: "2"))
+        reopened.setV2EncryptedMigrationsGracePeriodStart(nil, userId: "1")
+        XCTAssertNil(subject.v2EncryptedMigrationsGracePeriodStart(userId: "1"))
+    }
+
     /// `accessTokenExpirationDate(userId:)` returns `nil` if there isn't a previously stored value.
     func test_accessTokenExpirationDate_isInitiallyNil() {
         XCTAssertNil(subject.accessTokenExpirationDate(userId: "-1"))

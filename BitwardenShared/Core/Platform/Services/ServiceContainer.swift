@@ -928,9 +928,32 @@ public class ServiceContainer: Services { // swiftlint:disable:this type_body_le
             syncService: syncService,
         )
 
+        let emailAliasService = DefaultEmailAliasService(
+            adapter: .simpleLogin,
+            cipherService: cipherService,
+            clientService: clientService,
+            stateService: stateService,
+            syncService: syncService,
+            vaultTimeoutService: vaultTimeoutService,
+        )
+        Task {
+            var previousAccountId = try? await stateService.getActiveAccountId()
+            for await accountId in await stateService.activeAccountIdPublisher().values
+                where accountId != previousAccountId {
+                await emailAliasService.cancelAndClear()
+                previousAccountId = accountId
+            }
+        }
+        Task {
+            for await lockStatus in await vaultTimeoutService.vaultLockStatusPublisher().values
+                where lockStatus == nil || lockStatus?.isVaultLocked == true {
+                await emailAliasService.cancelAndClear()
+            }
+        }
         let generatorRepository = DefaultGeneratorRepository(
             clientService: clientService,
             dataStore: dataStore,
+            emailAliasService: emailAliasService,
             errorReporter: errorReporter,
             policyService: policyService,
             stateService: stateService,

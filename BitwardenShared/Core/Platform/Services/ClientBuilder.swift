@@ -67,6 +67,12 @@ class DefaultClientBuilder: ClientBuilder {
             bitwardenClientVersion: Bundle.main.appVersion,
             bitwardenPackageType: nil,
         )
-        return Client(tokenProvider: tokenProvider, settings: settings)
+        // The existing EnvironmentService applies managed environment URLs to `settings` above.
+        // This app has no SDK management-profile source; use the SDK's native empty-profile handle.
+        return Client(
+            tokenProvider: tokenProvider,
+            settings: settings,
+            managedSettings: ManagedSettingsBindingClient(),
+        )
     }
 }

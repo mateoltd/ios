@@ -67,6 +67,9 @@ struct CipherMiniResponseModel: JSONResponse, Equatable {
     /// Whether the organization for the cipher supports TOTP.
     let organizationUseTotp: Bool
 
+    /// Server-restricted encrypted envelope. Its presence must survive storage and SDK mapping.
+    let partialData: String?
+
     /// Passport data if the cipher is a passport.
     let passport: CipherPassportModel?
 

@@ -2,6 +2,7 @@
 import BitwardenKit
 import BitwardenKitMocks
 import BitwardenResources
+import BitwardenSdk
 import SwiftUI
 import ViewInspector
 import ViewInspectorTestHelpers
@@ -121,7 +122,9 @@ class GeneratorViewTests: BitwardenTestCase {
     /// Tapping on the refresh button dispatches the `.refreshGeneratedValue` action.
     @MainActor
     func test_generatedValue_refreshTap() throws {
-        let button = try subject.inspect().find(buttonWithAccessibilityLabel: Localizations.generatePassword)
+        let button = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "RegenerateValueButton")
+            .button()
         try button.tap()
         XCTAssertEqual(processor.dispatchedActions.last, .refreshGeneratedValue)
     }
@@ -312,5 +315,85 @@ class GeneratorViewTests: BitwardenTestCase {
         let toggle = try subject.inspect().find(toggleWithAccessibilityLabel: Localizations.lowercaseAtoZ)
         try toggle.tap()
         XCTAssertEqual(processor.dispatchedActions.last, .toggleValueChanged(field: field, isOn: false))
+    }
+
+    // MARK: Private
+}
+
+extension GeneratorViewTests {
+    /// Recovery is reachable even when uncertain creation returned no address.
+    @MainActor
+    func test_recoveryButtonWithoutAlias_tap() throws {
+        processor.state.generatorType = .username
+        processor.state.usernameState.usernameGeneratorType = .forwardedEmail
+        processor.state.usernameState.forwardedEmailService = .simpleLogin
+        processor.state.aliasRecoveryNeeded = true
+        let button = try subject.inspect().find(button: Localizations.reconcileEmailAliases)
+        try button.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .reconcileEmailAliases)
+    }
+
+    /// Alias lifecycle controls expose stable accessibility identifiers and dispatch only explicit actions.
+    @MainActor
+    func test_emailAliasLifecycleControls_dispatchExplicitActions() throws {
+        configureEmailAlias(status: .enabled)
+
+        let status = try subject.inspect().find(viewWithAccessibilityIdentifier: "EmailAliasStatus")
+        XCTAssertEqual(try status.text().string(), Localizations.emailAliasStatusEnabled)
+
+        let enabledButton = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "EmailAliasEnabledButton")
+            .button()
+        try enabledButton.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .emailAliasEnabledChanged(false))
+
+        let reconcileButton = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "ReconcileEmailAliasesButton")
+            .button()
+        try reconcileButton.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .reconcileEmailAliases)
+
+        let deleteButton = try subject.inspect()
+            .find(viewWithAccessibilityIdentifier: "DeleteEmailAliasButton")
+            .button()
+        try deleteButton.tap()
+        XCTAssertEqual(processor.dispatchedActions.last, .deleteEmailAlias)
+    }
+
+    /// A deleted alias announces its terminal state without exposing invalid lifecycle actions.
+    @MainActor
+    func test_emailAliasLifecycleControls_deletedState() throws {
+        configureEmailAlias(status: .deleted)
+
+        let status = try subject.inspect().find(viewWithAccessibilityIdentifier: "EmailAliasStatus")
+        XCTAssertEqual(try status.text().string(), Localizations.emailAliasStatusDeleted)
+        XCTAssertThrowsError(
+            try subject.inspect().find(viewWithAccessibilityIdentifier: "EmailAliasEnabledButton"),
+        )
+        XCTAssertThrowsError(
+            try subject.inspect().find(viewWithAccessibilityIdentifier: "DeleteEmailAliasButton"),
+        )
+        XCTAssertNoThrow(
+            try subject.inspect().find(viewWithAccessibilityIdentifier: "ReconcileEmailAliasesButton"),
+        )
+    }
+
+    @MainActor
+    private func configureEmailAlias(status: EmailAliasLifecycleStatus) {
+        processor.state.generatorType = .username
+        processor.state.usernameState.usernameGeneratorType = .forwardedEmail
+        processor.state.usernameState.forwardedEmailService = .simpleLogin
+        let identity = AliasIdentity(
+            version: UInt32(AliasConnectionSchema.version),
+            connectionId: "11111111-1111-4111-8111-111111111111",
+            aliasId: "42",
+            address: "alias@example.test",
+        )
+        processor.state.emailAliasResult = EmailAliasResult(
+            address: identity.address,
+            reference: "encrypted-alias-reference",
+            identity: identity,
+            status: status,
+        )
     }
 }

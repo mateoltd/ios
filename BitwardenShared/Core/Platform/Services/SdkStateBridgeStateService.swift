@@ -140,6 +140,17 @@ protocol SdkStateBridgeStateService { // sourcery: AutoMockable
     ///
     func setUserKeyId(_ keyId: String?, userId: String) async
 
+    // MARK: V2 Encrypted Migrations Grace Period
+
+    /// Returns the persisted migration grace-period start for the specified account.
+    func getV2EncryptedMigrationsGracePeriodStart(userId: String) async -> V2EncryptedMigrationsGracePeriodStart?
+
+    /// Persists the migration grace-period start, or clears it when `nil`, for the specified account.
+    func setV2EncryptedMigrationsGracePeriodStart(
+        _ start: V2EncryptedMigrationsGracePeriodStart?,
+        userId: String,
+    ) async
+
     // MARK: V2 Upgrade Token
 
     /// Gets the user's V2 encryption upgrade token.

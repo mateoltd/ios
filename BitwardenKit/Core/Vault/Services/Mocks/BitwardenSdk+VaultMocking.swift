@@ -63,7 +63,6 @@ public extension CipherListView {
             organizationId: cipher.organizationId,
             folderId: cipher.folderId,
             collectionIds: cipher.collectionIds,
-            key: cipher.key,
             name: cipher.name ?? "",
             subtitle: "",
             type: CipherListViewType(cipher: cipher),
@@ -81,6 +80,7 @@ public extension CipherListView {
             archivedDate: cipher.archivedDate,
             copyableFields: [],
             localData: cipher.localData.map(LocalDataView.init),
+            partial: cipher.partialData != nil,
         )
     }
 }
@@ -159,6 +159,7 @@ public extension Cipher {
             revisionDate: cipherView.revisionDate,
             archivedDate: cipherView.archivedDate,
             data: nil,
+            partialData: nil,
         )
     }
 }
@@ -197,6 +198,7 @@ public extension CipherView {
             deletedDate: cipher.deletedDate,
             revisionDate: cipher.revisionDate,
             archivedDate: cipher.archivedDate,
+            partial: cipher.partialData != nil,
         )
     }
 }
@@ -371,11 +373,12 @@ public extension Login {
         self.init(
             username: loginView.username,
             password: loginView.password,
+            aliasReference: loginView.aliasReference,
             passwordRevisionDate: loginView.passwordRevisionDate,
             uris: loginView.uris?.map(LoginUri.init),
             totp: loginView.totp,
             autofillOnPageLoad: loginView.autofillOnPageLoad,
-            fido2Credentials: loginView.fido2Credentials,
+            fido2Credentials: loginView.fido2Credentials?.map(Fido2Credential.init),
         )
     }
 }
@@ -385,11 +388,12 @@ public extension LoginView {
         self.init(
             username: login.username,
             password: login.password,
+            aliasReference: login.aliasReference,
             passwordRevisionDate: login.passwordRevisionDate,
             uris: login.uris?.map(LoginUriView.init),
             totp: login.totp,
             autofillOnPageLoad: login.autofillOnPageLoad,
-            fido2Credentials: login.fido2Credentials,
+            fido2Credentials: login.fido2Credentials?.map(Fido2CredentialView.init),
         )
     }
 }
@@ -477,6 +481,7 @@ public extension SendView {
             type: send.type,
             file: send.file.map(SendFileView.init),
             text: send.text.map(SendTextView.init),
+            data: send.data.map { SendItemView(data: CipherView(cipher: $0.data)) },
             maxAccessCount: send.maxAccessCount,
             accessCount: send.accessCount,
             disabled: send.disabled,
@@ -522,6 +527,7 @@ public extension Send {
             type: sendView.type,
             file: sendView.file.map(SendFile.init),
             text: sendView.text.map(SendText.init),
+            data: sendView.data.map { SendItem(encryptionVersion: .v1, data: Cipher(cipherView: $0.data)) },
             maxAccessCount: sendView.maxAccessCount,
             accessCount: sendView.accessCount,
             disabled: sendView.disabled,

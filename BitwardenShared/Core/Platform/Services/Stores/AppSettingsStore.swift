@@ -675,6 +675,9 @@ protocol AppSettingsStore: AnyObject {
     ///
     func setV2UpgradeToken(_ token: V2UpgradeToken?, userId: String)
 
+    /// Persists or clears the encrypted-migration grace-period start for an account.
+    func setV2EncryptedMigrationsGracePeriodStart(_ start: V2EncryptedMigrationsGracePeriodStart?, userId: String)
+
     /// Get whether the device should be trusted.
     ///
     /// - Returns: Whether to trust the device.
@@ -737,6 +740,9 @@ protocol AppSettingsStore: AnyObject {
     /// - Returns: The user's V2 encryption upgrade token.
     ///
     func v2UpgradeToken(userId: String) -> V2UpgradeToken?
+
+    /// Returns the encrypted-migration grace-period start for an account.
+    func v2EncryptedMigrationsGracePeriodStart(userId: String) -> V2EncryptedMigrationsGracePeriodStart?
 
     // MARK: Publishers
 
@@ -926,6 +932,7 @@ extension DefaultAppSettingsStore: AppSettingsStore, ConfigSettingsStore {
         case userKeyId(userId: String)
         case usernameGenerationOptions(userId: String)
         case usesKeyConnector(userId: String)
+        case v2EncryptedMigrationsGracePeriodStart(userId: String)
         case v2UpgradeToken(userId: String)
         case vaultTimeoutAction(userId: String)
 
@@ -1058,6 +1065,8 @@ extension DefaultAppSettingsStore: AppSettingsStore, ConfigSettingsStore {
                 "usernameGenerationOptions_\(userId)"
             case let .usesKeyConnector(userId):
                 "usesKeyConnector_\(userId)"
+            case let .v2EncryptedMigrationsGracePeriodStart(userId):
+                "v2EncryptedMigrationsGracePeriodStart_\(userId)"
             case let .v2UpgradeToken(userId):
                 "v2UpgradeToken_\(userId)"
             case let .vaultTimeoutAction(userId):
@@ -1494,6 +1503,14 @@ extension DefaultAppSettingsStore: AppSettingsStore, ConfigSettingsStore {
 
     func setUsesKeyConnector(_ usesKeyConnector: Bool, userId: String) {
         store(usesKeyConnector, for: .usesKeyConnector(userId: userId))
+    }
+
+    func setV2EncryptedMigrationsGracePeriodStart(_ start: V2EncryptedMigrationsGracePeriodStart?, userId: String) {
+        store(start, for: .v2EncryptedMigrationsGracePeriodStart(userId: userId))
+    }
+
+    func v2EncryptedMigrationsGracePeriodStart(userId: String) -> V2EncryptedMigrationsGracePeriodStart? {
+        fetch(for: .v2EncryptedMigrationsGracePeriodStart(userId: userId))
     }
 
     func setV2UpgradeToken(_ token: V2UpgradeToken?, userId: String) {

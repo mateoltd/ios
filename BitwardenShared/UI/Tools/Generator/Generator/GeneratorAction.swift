@@ -1,4 +1,5 @@
 import BitwardenKit
+import BitwardenSdk
 
 /// Actions that can be processed by a `GeneratorProcessor`.
 ///
@@ -6,11 +7,29 @@ enum GeneratorAction: Equatable {
     /// Clears the URL after it has been opened.
     case clearUrl
 
+    case aliasRecipientChanged(String)
+    case aliasContacts(EmailAliasContactOperation)
+    case copyAliasContact(SendReplyIdentity)
+    case composeAliasContact(SendReplyIdentity)
+    case selectRecoveredAlias(EmailAliasResult)
+
     /// The copy generated value button was pressed.
     case copyGeneratedValue
 
     /// The dismiss button was pressed
     case dismissPressed
+
+    /// The user explicitly requested deletion of the current alias.
+    case deleteEmailAlias
+
+    /// The user explicitly requested a forwarding-state change.
+    case emailAliasEnabledChanged(Bool)
+
+    /// The user explicitly requested reconciliation with the provider.
+    case reconcileEmailAliases
+
+    /// The generator view disappeared and must release decrypted alias state.
+    case viewDisappeared
 
     /// The email type was changed.
     case emailTypeChanged(UsernameEmailType)
@@ -83,16 +102,25 @@ extension GeneratorAction {
         case let .textFieldFocusChanged(keyPath):
             // Only generate a new value when focus leaves the field (keyPath == nil).
             keyPath == nil
-        case .clearUrl,
+        case .aliasContacts,
+             .aliasRecipientChanged,
+             .clearUrl,
+             .composeAliasContact,
+             .copyAliasContact,
              .copyGeneratedValue,
+             .deleteEmailAlias,
              .dismissPressed,
+             .emailAliasEnabledChanged,
              .fillGeneratedValue,
              .guidedTourViewAction,
              .learnMoreAboutPremium,
+             .reconcileEmailAliases,
+             .selectRecoveredAlias,
              .showPasswordHistory,
              .sliderEditingChanged,
              .textFieldIsPasswordVisibleChanged,
-             .toastShown:
+             .toastShown,
+             .viewDisappeared:
             false
         }
     }

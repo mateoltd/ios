@@ -285,7 +285,11 @@ class DefaultClientBuilder: ClientBuilder {
     // MARK: Methods
 
     func buildClient() -> BitwardenSdkClient {
-        Client(tokenProvider: DefaultClientManagedTokensProvider(), settings: settings)
+        Client(
+            tokenProvider: DefaultClientManagedTokensProvider(),
+            settings: settings,
+            managedSettings: ManagedSettingsBindingClient(),
+        )
     }
 }
 
